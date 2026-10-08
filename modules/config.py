@@ -52,6 +52,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "safe_command_timeout_seconds": 60,
     "max_log_lines": 50,
     "max_output_bytes": 16384,
+    "context_engine": {
+        "index_db_path": None,
+        "default_token_budget": 4000,
+        "max_files": 15,
+        "max_symbols": 30,
+        "max_depth": 2,
+    },
 }
 
 

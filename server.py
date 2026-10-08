@@ -32,6 +32,30 @@ from modules.code_intel import (
     read_symbol,
 )
 from modules.config import load_config
+from modules.context_engine import (
+    find_impact as _find_impact,
+)
+from modules.context_engine import (
+    find_relevant_tests as _find_relevant_tests,
+)
+from modules.context_engine import (
+    git_context as _git_context,
+)
+from modules.context_engine import (
+    inspect_local_services as _inspect_local_services,
+)
+from modules.context_engine import (
+    inspect_project as _inspect_project,
+)
+from modules.context_engine import (
+    inspect_runtime as _inspect_runtime,
+)
+from modules.context_engine import (
+    prepare_context as _prepare_context,
+)
+from modules.context_engine import (
+    trace_error as _trace_error,
+)
 from modules.docs import convert_document_to_pdf
 from modules.logger import logger
 from modules.observability import metrics, observe_tool
@@ -63,8 +87,8 @@ from modules.vault import (
 # Initialize MCP Server
 app = MCPServer(
     name="protocol-brain",
-    version="0.2.1",
-    description="Universal Second Brain & Hardened Windows Power Tools Gateway for AI Agents",
+    version="0.3.0",
+    description="Universal Second Brain & Fast Context Engine for Terminal AI Agents",
 )
 
 
@@ -387,7 +411,101 @@ def get_system_metrics() -> Dict[str, Any]:
 
 
 # ==============================================================================
-# 💬 6. MCP Prompts
+# 🧠 6. Context Engine & Terminal AI Intelligence Tools (v0.3.0)
+# ==============================================================================
+
+@app.tool()
+@observe_tool("prepare_context")
+def prepare_context(
+    query: str,
+    budget_tokens: int = 4000,
+    max_files: int = 10,
+    mode: str = "fast",
+    workspace_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Synthesize minimal, high-signal context packet for Terminal AI under a strict token budget.
+    Extracts relevant AST symbol slices with ~90% token reduction vs full files.
+    """
+    return _prepare_context(
+        query=query,
+        budget_tokens=budget_tokens,
+        max_files=max_files,
+        mode=mode,
+        workspace_root=workspace_root,
+    )
+
+
+@app.tool()
+@observe_tool("inspect_project")
+def inspect_project(workspace_root: Optional[str] = None, max_depth: int = 2) -> Dict[str, Any]:
+    """
+    Generate an immediate architectural blueprint: tech stack, package managers, entry points,
+    test runners, and directory map for Terminal AI.
+    """
+    return _inspect_project(workspace_root=workspace_root, max_depth=max_depth)
+
+
+@app.tool()
+@observe_tool("trace_error")
+def trace_error(error_log: str, workspace_root: Optional[str] = None, budget_tokens: int = 3000) -> Dict[str, Any]:
+    """
+    Diagnose a stack trace or crash log: pinpoints crash site in source code, extracts code slice,
+    identifies callers and related tests, and outputs actionable fix suggestions.
+    """
+    return _trace_error(error_log=error_log, workspace_root=workspace_root, budget_tokens=budget_tokens)
+
+
+@app.tool()
+@observe_tool("find_impact")
+def find_impact(symbol_name: str, file_path: Optional[str] = None, workspace_root: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Analyze blast radius before refactoring: finds all callers, dependent modules, affected tests,
+    and assigns a change risk level (LOW/MEDIUM/HIGH/CRITICAL).
+    """
+    return _find_impact(symbol_name=symbol_name, file_path=file_path, workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("find_relevant_tests")
+def find_relevant_tests(target_file_or_symbol: str, workspace_root: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Locates tests covering a given symbol or file and generates targeted CLI commands to run only those tests.
+    """
+    return _find_relevant_tests(target_file_or_symbol=target_file_or_symbol, workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("git_context")
+def git_context(file_path: Optional[str] = None, commits: int = 5, workspace_root: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Get token-compact Git history, recent authors/messages, and frequently co-changed files.
+    """
+    return _git_context(file_path=file_path, commits=commits, workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("inspect_runtime")
+def inspect_runtime(workspace_root: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Inspect development runtime: OS, Python/Node/Git/Docker versions, virtual environments,
+    and safe environment variables with 100% secret redaction.
+    """
+    return _inspect_runtime(workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("inspect_local_services")
+def inspect_local_services(workspace_root: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Discover active listening localhost services (Vite, Next, FastAPI, PostgreSQL, Redis, MCP).
+    Identifies process names, PIDs, and ports to prevent conflicts.
+    """
+    return _inspect_local_services(workspace_root=workspace_root)
+
+
+# ==============================================================================
+# 💬 7. MCP Prompts
 # ==============================================================================
 
 @app.prompt()

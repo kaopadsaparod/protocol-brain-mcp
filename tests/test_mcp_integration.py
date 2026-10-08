@@ -38,7 +38,11 @@ async def test_mcp_stdio_protocol_roundtrip():
             assert "get_file_outline" in tool_names
             assert "get_security_policy" in tool_names
             assert "run_windows_command" in tool_names
-            assert len(tool_names) >= 22
+            assert "prepare_context" in tool_names
+            assert "inspect_project" in tool_names
+            assert "trace_error" in tool_names
+            assert "find_impact" in tool_names
+            assert len(tool_names) == 32
 
             # 3. List Resources
             resources_result = await session.list_resources()

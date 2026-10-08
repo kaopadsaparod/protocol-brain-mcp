@@ -48,5 +48,11 @@ htmlcov/
 logs/
 *.log
 
+# Protocol Brain cache & index
+.protocol_brain/
+*.db
+*.db-wal
+*.db-shm
+
 # Local custom config overrides
 config.local.json

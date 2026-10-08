@@ -41,6 +41,14 @@ TOOL_CATEGORIES: Dict[str, ToolCategory] = {
     "get_git_diff": ToolCategory.READ_ONLY,
     "get_system_metrics": ToolCategory.READ_ONLY,
     "get_security_policy": ToolCategory.READ_ONLY,
+    "prepare_context": ToolCategory.READ_ONLY,
+    "inspect_project": ToolCategory.READ_ONLY,
+    "trace_error": ToolCategory.READ_ONLY,
+    "find_impact": ToolCategory.READ_ONLY,
+    "find_relevant_tests": ToolCategory.READ_ONLY,
+    "git_context": ToolCategory.READ_ONLY,
+    "inspect_runtime": ToolCategory.READ_ONLY,
+    "inspect_local_services": ToolCategory.READ_ONLY,
 
     # USER_VISIBLE
     "notify_user_windows": ToolCategory.USER_VISIBLE,
