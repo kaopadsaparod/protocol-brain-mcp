@@ -10,6 +10,13 @@ from typing import Any, Dict, List, Optional
 
 from ..logger import logger
 
+SAFE_GIT_ARGS = [
+    "-c", "core.fsmonitor=false",
+    "-c", "core.hooksPath=NUL",
+    "--no-pager",
+    "--no-optional-locks",
+]
+
 
 def find_git_binary() -> Optional[str]:
     return shutil.which("git") or r"C:\Program Files\Git\cmd\git.exe"
@@ -21,7 +28,7 @@ def is_git_repo(path: Path) -> bool:
         return False
     try:
         res = subprocess.run(
-            [git_bin, "rev-parse", "--is-inside-work-tree"],
+            [git_bin, *SAFE_GIT_ARGS, "rev-parse", "--is-inside-work-tree"],
             cwd=str(path),
             capture_output=True,
             text=True,
@@ -55,7 +62,7 @@ def get_git_status(repo_path_str: Optional[str] = None) -> Dict[str, Any]:
     try:
         # Branch
         b_res = subprocess.run(
-            [git_bin, "branch", "--show-current"],
+            [git_bin, *SAFE_GIT_ARGS, "branch", "--show-current"],
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -65,7 +72,7 @@ def get_git_status(repo_path_str: Optional[str] = None) -> Dict[str, Any]:
 
         # Porcelain status
         s_res = subprocess.run(
-            [git_bin, "status", "--porcelain=v1"],
+            [git_bin, *SAFE_GIT_ARGS, "status", "--porcelain=v1"],
             cwd=str(repo),
             capture_output=True,
             text=True,
@@ -129,8 +136,8 @@ def get_git_diff_summary(
 
     git_bin = find_git_binary()
     try:
-        stat_cmd = [git_bin, "diff", "--stat"]
-        diff_cmd = [git_bin, "diff"]
+        stat_cmd = [git_bin, *SAFE_GIT_ARGS, "diff", "--no-ext-diff", "--no-textconv", "--stat"]
+        diff_cmd = [git_bin, *SAFE_GIT_ARGS, "diff", "--no-ext-diff", "--no-textconv"]
         if staged_only:
             stat_cmd.append("--cached")
             diff_cmd.append("--cached")

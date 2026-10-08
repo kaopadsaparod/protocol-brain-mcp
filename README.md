@@ -119,7 +119,7 @@ flowchart TD
 * `find_impact(symbol_name, file_path, workspace_root)`: คำนวณ Blast Radius ก่อน Refactor หา Callers ทั้งหมด โมดูลที่พึ่งพา เทสต์ที่ได้รับผลกระทบ และระดับความเสี่ยง (LOW/MEDIUM/HIGH/CRITICAL)
 * `find_relevant_tests(target_file_or_symbol, workspace_root)`: ค้นหาเทสต์ที่ครอบคลุมไฟล์หรือ Symbol นั้น พร้อมสร้างคำสั่งรันเทสต์เฉพาะจุด (เช่น `pytest <file> -k <test>`)
 * `git_context(file_path, commits, workspace_root)`: ประวัติ Git ขนาดกะทัดรัด พร้อมวิเคราะห์ไฟล์ที่มักถูกแก้พร้อมกัน (Co-changed files)
-* `inspect_runtime(workspace_root)`: ตรวจสอบสภาพแวดล้อมรันไทม์ (OS, Python/Node/Git/Docker versions, Virtualenv) พร้อม **100% Secret Redaction** ป้องกัน API Keys / Secrets รั่วไหล
+* `inspect_runtime(workspace_root)`: ตรวจสอบสภาพแวดล้อมรันไทม์ (OS, Python/Node/Git/Docker versions, Virtualenv) พร้อม **Heuristic Secret Redaction** (กรอง API Keys, Tokens, Passwords และ Connection Strings)
 * `inspect_local_services(workspace_root)`: สแกนพอร์ต Dev Server และ Database ภายในเครื่อง (Vite, Next, FastAPI, Express, PostgreSQL, Redis) พร้อม PID
 
 ### 4. Deep Code Graph, Diff Intelligence & Dev Stack (v0.4.0 Flagship)
@@ -132,13 +132,13 @@ flowchart TD
 * `inspect_config_usage(variable_name)`: ตรวจสอบเส้นทางของตัวแปรสภาพแวดล้อม (Defined ใน .env ไหน, Source code ไฟล์ไหนอ่านค่าไปใช้) โดยไม่มีทางรั่วไหลค่า Secret สด
 
 ### 5. Windows Guard & Git Power Tools
-* `release_port(port)`: ค้นหา PID ที่ยึดพอร์ต dev (1024-65535) แล้ว Terminate Process Tree ทันที มีระบบป้องกัน TOCTOU PID reuse
+* `release_port(port)`: ค้นหา PID ที่ยึดพอร์ต dev (1024-65535) แล้ว Terminate Process Tree ทันที (ควบคุมด้วยสิทธิ์ `process_termination` และมีระบบป้องกัน TOCTOU PID reuse)
 * `get_active_listening_ports()`: ดูรายการพอร์ต TCP ที่กำลังถูกใช้งาน
-* `check_git_status(repo_path)`: ตรวจสถานะ Git (Branch, Staged, Unstaged, Untracked) ในรูปแบบกระชับ
-* `get_git_diff(repo_path, staged_only)`: ดูสรุป Diff สถิติการแก้ไขไฟล์ พร้อมตัวอย่าง Diff แบบจำกัดบรรทัด
+* `check_git_status(repo_path)`: ตรวจสถานะ Git (Branch, Staged, Unstaged, Untracked) ในรูปแบบกระชับ ป้องกัน Git hooks injection
+* `get_git_diff(repo_path, staged_only)`: ดูสรุป Diff สถิติการแก้ไขไฟล์ พร้อมตัวอย่าง Diff แบบจำกัดบรรทัด และปิด external diff engine เพื่อความปลอดภัย
 * `run_windows_command(cmd, cwd)`: รันคำสั่งปลอดภัย (`shell=False`, Argument vector, ป้องกัน Shell Injection, ปรับ `npm.cmd` อัตโนมัติ, จำกัดใน `trusted_workspaces`)
 * `check_system_and_gpu()`: เช็คโหลด CPU, RAM, เนื้อที่ดิสก์ และตรวจจับ VRAM ของการ์ดจอ NVIDIA อัตโนมัติ
-* `notify_user_windows(title, msg)`: ส่งการแจ้งเตือน Windows Toast Notification
+* `notify_user_windows(title, msg)`: ส่งการแจ้งเตือน Windows Toast Notification ปลอดภัยผ่าน Environment Variables ป้องกัน Command Escape 100%
 * `convert_to_thai_pdf(input_file)`: แปลง DOCX/MD เป็น PDF ภาษาไทยด้วย LibreOffice Headless
 
 ### 6. Security & Observability Inspection
@@ -147,7 +147,7 @@ flowchart TD
 
 ---
 
-## 🔒 การรักษาความปลอดภัยเชิงลึก (Security & Hardening)
+## 🔒 การรักษาความปลอดภัยเชิงลึก (Security & Hardening v0.5.0)
 
 > [!IMPORTANT]
 > **คำแนะนำสำหรับ AI Client:** เพื่อความปลอดภัยสูงสุด แนะนำให้ตั้งค่า AI Client (เช่น `agy` หรือ Claude Code) ให้ **ถามยืนยันก่อนรันคำสั่ง (User Confirmation / Ask Permission)** สำหรับ 2 เครื่องมือนี้เสมอ:
@@ -155,25 +155,38 @@ flowchart TD
 > - `release_port`
 > **ห้ามเปิด auto-approve สำหรับคำสั่งที่มีผลต่อระบบปฏิบัติการ**
 
-1. **Hardened Shell Runner (`shell_runner.py`):**
+1. **Capability-Based Policy Engine (`policy.py`):**
+   - ควบคุมการทำงานของคำสั่งด้วยสิทธิ์แบบละเอียด (`git_read`, `git_write`, `run_tests`, `package_install`, `system_control`, `process_termination`)
+   - สกัดกั้น Path Traversal ในการรันเทสต์ เช่น `python tests/../malicious.py` โดยบังคับตรวจ Resolve Path จริงให้อยู่ใต้โฟลเดอร์ `tests/`
+   - แบน Flag เขียนไฟล์ (`--output`, `-o`) และ Flag อ่านนอก Repo (`--no-index`) ในคำสั่ง `git_read`
+   - คำสั่งที่แก้ไข Git (`branch -D`, `tag -d`, `remote add`), แก้ไขไฟล์ (`ruff --fix`, `ruff format`), หรือดาวน์โหลดแพ็กเกจ (`npx`) ถูกจัดเป็น Privileged Write ทั้งหมด
+   - คำสั่ง `release_port` ควบคุมด้วยสิทธิ์ `process_termination` (ปิดเป็น Default)
+2. **Hardened Shell Runner (`shell_runner.py`):**
    - รันด้วย `shell=False` ส่งผ่านเป็น Argument Vector เสมอ ป้องกันการพ่วงคำสั่ง cmd.exe
-   - ปฏิเสธ Metacharacters: `&`, `|`, `<`, `>`, `^`, `%`, `\n`, `\r`, `;`, `` ` ``
-   - ตรวจจับและปฏิเสธ Flag อันตรายสำหรับการรันโค้ดสด เช่น `python -c`, `node -e`, `git -c`
+   - ปฏิเสธ Metacharacters: `&`, `|`, `<`, `>`, `^`, `\n`, `\r`, `;`, `` ` `` (ปลดแบน `%` เพื่อให้คำสั่ง format เช่น `git log --format="%h"` ทำงานได้ปกติโดยไม่มีผลกระทบต่อ `shell=False`)
+   - ตัด Literal Quotes ที่ค้างจาก token parser เพื่อป้องกัน path เพี้ยนบน Windows
+   - แยกแยะ Flag Case-Sensitive (เช่น `git -C` ไม่ถูกบล็อกเป็น `git -c`)
+   - ตรวจจับและรัน `pytest` ใน `.venv` ผ่าน `["-m", "pytest"]` อย่างถูกต้อง
    - ค้นหา Binary ตรงจาก System `PATH` เท่านั้น ไม่อนุญาตให้รัน binary ที่วางดักไว้ใน `cwd`
-   - จำกัดไดเรกทอรีทำงานให้อยู่เฉพาะใน `allowed_roots`
    - เพดาน Timeout เข้มงวด หากเกินเวลาจะสั่งฆ่า Process Tree ลูกหลานทั้งหมดด้วย `psutil.children(recursive=True)`
-   - จำกัดความยาว Output ตาม `max_log_lines` และเพดานไบต์
-2. **Hardened Port Killer (`port_killer.py`):**
-   - จำกัดพอร์ตเฉพาะ User-space `1024 - 65535` ไม่อนุญาตให้ยุ่งกับพอร์ตระบบ (0-1023)
-   - ป้องกันไม่ให้ฆ่า Process ตัวเองและ Ancestors/Parent ทั้งหมด (เช่น ตัว client หรือ terminal host)
-   - มี **Denylist** คุ้มครองโปรเซสสำคัญ: `code.exe`, `claude.exe`, `ollama.exe`, `docker.exe`, `postgres.exe`, `explorer.exe`, `svchost.exe`
-   - ตรวจสอบความพร้อมซ้ำ (Post-verification) หลังการสั่งฆ่า เพื่อยืนยันว่าพอร์ตว่างจริง
-3. **การส่ง Log ผ่าน `stderr` เท่านั้น:**
+   - ตัดความยาว Output ตาม `max_log_lines` และเพดานไบต์ พร้อม Sanitization ข้อมูลความลับอัตโนมัติ
+3. **PowerShell Toast Notification Immunity (`notification.py`):**
+   - ส่งผ่าน `$title` และ `$message` ผ่าน Environment Variables (`$env:PB_NOTIF_TITLE`, `$env:PB_NOTIF_MSG`) โดยไม่มีการแทรกข้อความลงในสคริปต์ ป้องกันการหลุด Escape ของ Single/Double/Smart Quotes 100%
+4. **Obsidian Vault Confinement (`writer.py`, `reader.py`):**
+   - ปฏิเสธการเข้าถึงหรือสร้างไฟล์ในไดเรกทอรีซ่อนเร้น (`.obsidian`, `.git`, `.vscode`) ป้องกันการเขียนทับ Plugin หรือ Config
+   - บังคับนามสกุลไฟล์เป็น `.md` เท่านั้น และนำ `D:\vault` ออกจาก `trusted_workspaces`
+5. **Multi-Project Index Isolation (`storage.py`):**
+   - แยกไฟล์ฐานข้อมูล SQLite ตามแต่ละ Workspace อย่างอิสระ (และใช้ SHA-256 Path Hash สำหรับ Fallback Cache) ป้องกันไม่ให้การ Prune ของโปรเจกต์หนึ่งไปลบข้อมูลของอีกโปรเจกต์
+6. **Heuristic Secret Redaction (`sanitizer.py`):**
+   - ตรวจจับและมาสก์ API Keys, Personal Access Tokens, Bearer Tokens, Passwords, Private Keys, และ Connection Strings (PostgreSQL, MySQL, Redis, Mongo) ก่อนแสดงผลหรือบันทึกลง Log
+7. **Modular Tool Profiles & Transport Guard (`server.py`):**
+   - รองรับพารามิเตอร์ `--profile core|dev|full` เพื่อลด Attack Surface ตามสภาพแวดล้อมที่ใช้งาน
+   - เสริม `TrustedHostMiddleware` ป้องกันการโจมตีประเภท DNS Rebinding เมื่อเชื่อมต่อผ่าน Localhost HTTP/SSE
+8. **Deep Configuration Merging (`config.py`):**
+   - ผสานการตั้งค่าแบบ Recursive Deep Merge เพื่อให้ `config.local.json` สามารถ Override ค่าเฉพาะจุดได้โดยไม่ทำลายค่า Config อื่นๆ ในระดับเดียวกัน
+9. **Actionable Error Handling & Stderr Discipline:**
    - ช่องทาง `stdout` ถูกสงวนไว้ 100% สำหรับ MCP JSON-RPC Protocol สตรีมไม่มีการปนเปื้อนของ print
-4. **Actionable Error Handling:**
-   - คืนค่าโครงสร้าง `{ "success": false, "error": "...", "actionable_hint": "..." }` เพื่อให้ AI ไปต่อได้ถูกทาง
-5. **Local Config Override:**
-   - รองรับ `config.local.json` สำหรับการตั้งค่าเฉพาะเครื่องโดยไม่ถูก Commit ขึ้น Git
+   - คืนค่าโครงสร้าง `{ "success": false, "error": "...", "actionable_hint": "..." }` เพื่อให้ AI ดำเนินการต่อได้ถูกต้อง
 
 ---
 

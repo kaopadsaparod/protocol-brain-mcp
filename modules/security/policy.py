@@ -6,7 +6,7 @@ Defines:
 """
 
 from enum import Enum
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from ..config import load_config
 
@@ -75,6 +75,8 @@ TOOL_CATEGORIES: Dict[str, ToolCategory] = {
     "release_port": ToolCategory.PROCESS_TERMINATION,
 }
 
+from pathlib import Path
+
 # Capability mapping for command lines
 GIT_READ_SUBCOMMANDS: Set[str] = {
     "status", "diff", "log", "show", "branch", "rev-parse", "tag", "remote"
@@ -89,9 +91,39 @@ def get_tool_category(tool_name: str) -> ToolCategory:
     return TOOL_CATEGORIES.get(tool_name, ToolCategory.PROCESS_EXECUTION)
 
 
-def evaluate_command_capability(argv: List[str]) -> tuple[bool, str, str]:
+def evaluate_tool_capability(tool_name: str) -> tuple[bool, str, str]:
+    """
+    Evaluates whether an MCP tool is permitted under active security capabilities.
+    """
+    cfg = load_config()
+    capabilities: Dict[str, bool] = cfg.get("capabilities", {
+        "git_read": True,
+        "git_write": False,
+        "run_tests": True,
+        "package_install": False,
+        "system_control": False,
+        "process_termination": False,
+    })
+
+    if tool_name == "release_port":
+        is_allowed = capabilities.get("process_termination", False)
+        if not is_allowed:
+            return False, "process_termination", "Tool 'release_port' requires 'process_termination' capability which is disabled by default."
+        return True, "process_termination", "Allowed process termination"
+
+    return True, "none", "Tool permitted"
+
+
+def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> tuple[bool, str, str]:
     """
     Evaluates whether the given command vector is permitted under the active capability policy.
+    Hardens against:
+    - Path traversal in python test execution (tests/../evil.py)
+    - Git read operations with file write flags (--output) or out-of-bounds reads (--no-index)
+    - Git mutating subcommands/flags disguised as read (branch -D, tag -d, remote add)
+    - Untrusted npx execution (routed to package_install)
+    - Ruff and pytest code injection or source file mutation
+
     Returns: (is_allowed, required_capability, reason_or_error)
     """
     if not argv:
@@ -104,58 +136,178 @@ def evaluate_command_capability(argv: List[str]) -> tuple[bool, str, str]:
         "run_tests": True,
         "package_install": False,
         "system_control": False,
+        "process_termination": False,
     })
 
     exe_name = argv[0].lower().split(".")[0]
+    work_dir = cwd.resolve() if cwd else Path.cwd().resolve()
 
-    # 1. Git subcommands
+    # 1. Git command evaluation
     if exe_name == "git":
-        if len(argv) < 2:
-            return capabilities.get("git_read", True), "git_read", "git command without subcommand"
-        subcmd = argv[1].lower()
-        if subcmd in GIT_READ_SUBCOMMANDS:
+        # Find git subcommand skipping global flags like -C <path> or --no-pager
+        subcmd_idx = 1
+        while subcmd_idx < len(argv):
+            arg = argv[subcmd_idx]
+            if arg in ("-C", "-c", "--git-dir", "--work-tree"):
+                subcmd_idx += 2
+            elif arg.startswith("-"):
+                subcmd_idx += 1
+            else:
+                break
+
+        if subcmd_idx >= len(argv):
             req_cap = "git_read"
+            is_allowed = capabilities.get(req_cap, True)
+            return is_allowed, req_cap, "git command without subcommand"
+
+        subcmd = argv[subcmd_idx].lower()
+        sub_args = argv[subcmd_idx + 1:]
+
+        # Diff & Log inspection: reject --output or --no-index under git_read
+        if subcmd in ("diff", "log"):
+            for a in sub_args:
+                a_lower = a.lower()
+                if a_lower == "-o" or a_lower.startswith("--output"):
+                    req_cap = "git_write"
+                    is_allowed = capabilities.get(req_cap, False)
+                    if not is_allowed:
+                        return False, req_cap, f"Git {subcmd} with file output flag '{a}' requires '{req_cap}' capability."
+                    return True, req_cap, "Allowed git command with write"
+                if a_lower == "--no-index":
+                    req_cap = "system_control"
+                    is_allowed = capabilities.get(req_cap, False)
+                    if not is_allowed:
+                        return False, req_cap, f"Git {subcmd} with '--no-index' reads outside repository and requires '{req_cap}'."
+                    return True, req_cap, "Allowed git no-index under system_control"
+            req_cap = "git_read"
+
+        elif subcmd == "status" or subcmd in ("show", "rev-parse"):
+            req_cap = "git_read"
+
+        elif subcmd == "branch":
+            # Detect mutating branch operations: delete, rename, copy, create
+            mutating_branch_flags = {"-d", "-D", "-m", "-M", "-c", "-C", "--delete", "--move", "--copy", "-u", "--unset-upstream"}
+            has_mutating_flag = any(a in mutating_branch_flags for a in sub_args)
+            # Creating branch: git branch <branch_name> (non-flag argument present without query flags)
+            has_non_flag = any(not a.startswith("-") for a in sub_args)
+            has_query_flag = any(a in ("--list", "-l", "-a", "-r", "--show-current", "-v", "--verbose", "--merged", "--no-merged") for a in sub_args)
+
+            if has_mutating_flag or (has_non_flag and not has_query_flag):
+                req_cap = "git_write"
+            else:
+                req_cap = "git_read"
+
+        elif subcmd == "tag":
+            mutating_tag_flags = {"-a", "-s", "-u", "-d", "--delete"}
+            has_mutating_flag = any(a in mutating_tag_flags for a in sub_args)
+            has_non_flag = any(not a.startswith("-") for a in sub_args)
+            has_query_flag = any(a in ("-l", "--list", "-n", "--sort", "-v", "--verify") for a in sub_args)
+
+            if has_mutating_flag or (has_non_flag and not has_query_flag):
+                req_cap = "git_write"
+            else:
+                req_cap = "git_read"
+
+        elif subcmd == "remote":
+            mutating_remote_verbs = {"add", "rename", "remove", "rm", "set-head", "set-branches", "set-url", "prune"}
+            if any(a.lower() in mutating_remote_verbs for a in sub_args):
+                req_cap = "git_write"
+            else:
+                req_cap = "git_read"
+
         elif subcmd in GIT_WRITE_SUBCOMMANDS:
             req_cap = "git_write"
         else:
-            req_cap = "git_write"  # Default unclassified git commands to write
+            req_cap = "git_write"
 
         is_allowed = capabilities.get(req_cap, False)
         if not is_allowed:
             return False, req_cap, f"Git subcommand '{subcmd}' requires '{req_cap}' capability which is disabled."
-        return True, req_cap, "Allowed git command"
+        return True, req_cap, f"Allowed git command under {req_cap}"
 
-    # 2. Test runners & linters
-    if exe_name in ("pytest", "ruff"):
+    # 2. Test runners & Linters (pytest, ruff)
+    if exe_name == "pytest":
+        # Check for dangerous arbitrary code loading flags (-p <module>, -c, --override-ini)
+        for i, a in enumerate(argv[1:]):
+            if a == "-p" or a.startswith("-p=") or a.startswith("--override-ini") or a == "-c" or a.startswith("-c="):
+                req_cap = "system_control"
+                is_allowed = capabilities.get(req_cap, False)
+                if not is_allowed:
+                    return False, req_cap, f"Pytest with custom plugin/config flag '{a}' requires '{req_cap}' capability."
+                return True, req_cap, "Allowed pytest with system_control"
         req_cap = "run_tests"
         is_allowed = capabilities.get(req_cap, True)
         if not is_allowed:
             return False, req_cap, f"Command '{exe_name}' requires '{req_cap}' capability which is disabled."
-        return True, req_cap, "Allowed test/lint command"
+        return True, req_cap, "Allowed test command"
 
-    # 3. Python running tests vs general execution
-    if exe_name == "python":
-        norm_arg1 = argv[1].replace("\\", "/").lower() if len(argv) >= 2 else ""
-        if (len(argv) >= 3 and argv[1] == "-m" and argv[2] in ("pytest", "unittest", "ruff")) or (
-            norm_arg1.startswith("tests/")
-        ):
-            req_cap = "run_tests"
-            is_allowed = capabilities.get(req_cap, True)
+    if exe_name == "ruff":
+        # Ruff formatting/fixing modifies files -> requires git_write
+        if any(a in ("--fix", "--fix-only") for a in argv[1:]) or (len(argv) >= 2 and argv[1].lower() == "format"):
+            req_cap = "git_write"
+            is_allowed = capabilities.get(req_cap, False)
             if not is_allowed:
-                return False, req_cap, f"Running tests via python requires '{req_cap}' capability."
-            return True, req_cap, "Allowed python test execution"
+                return False, req_cap, "Ruff file formatting/fixing modifies source code and requires 'git_write' capability."
+            return True, req_cap, "Allowed ruff file modification"
+        req_cap = "run_tests"
+        is_allowed = capabilities.get(req_cap, True)
+        if not is_allowed:
+            return False, req_cap, f"Command '{exe_name}' requires '{req_cap}' capability which is disabled."
+        return True, req_cap, "Allowed ruff lint check"
 
-    # 4. Package managers (npm/npx)
-    if exe_name in ("npm", "npx"):
+    # 3. Python test execution with path traversal defense
+    if exe_name == "python":
+        if len(argv) >= 3 and argv[1] == "-m":
+            module_name = argv[2].lower()
+            if module_name in ("pytest", "unittest"):
+                req_cap = "run_tests"
+                is_allowed = capabilities.get(req_cap, True)
+                if not is_allowed:
+                    return False, req_cap, f"Running tests via python -m {module_name} requires '{req_cap}' capability."
+                return True, req_cap, "Allowed python test execution"
+            if module_name == "ruff":
+                if any(a in ("--fix", "--fix-only") for a in argv[3:]) or (len(argv) >= 4 and argv[3].lower() == "format"):
+                    req_cap = "git_write"
+                else:
+                    req_cap = "run_tests"
+                is_allowed = capabilities.get(req_cap, False)
+                if not is_allowed:
+                    return False, req_cap, f"Running python -m ruff with modification requires '{req_cap}' capability."
+                return True, req_cap, "Allowed python ruff execution"
+
+        # Check if running a test script directly
+        if len(argv) >= 2:
+            target_str = argv[1].strip()
+            tests_dir = (work_dir / "tests").resolve()
+            try:
+                target_path = (work_dir / target_str).resolve()
+                if (tests_dir in target_path.parents or target_path == tests_dir) and target_path.suffix.lower() == ".py":
+                    req_cap = "run_tests"
+                    is_allowed = capabilities.get(req_cap, True)
+                    if not is_allowed:
+                        return False, req_cap, f"Running tests via python requires '{req_cap}' capability."
+                    return True, req_cap, "Allowed python test execution"
+            except Exception:
+                pass
+
+    # 4. Package managers (npm vs npx)
+    if exe_name == "npm":
         if len(argv) >= 2 and argv[1].lower() in ("test", "run", "lint"):
             req_cap = "run_tests"
         else:
             req_cap = "package_install"
-
         is_allowed = capabilities.get(req_cap, False)
         if not is_allowed:
             return False, req_cap, f"NPM operation '{argv[1] if len(argv) > 1 else ''}' requires '{req_cap}' capability."
         return True, req_cap, "Allowed npm operation"
+
+    if exe_name == "npx":
+        # npx downloads/executes arbitrary packages from npm registry -> always requires package_install
+        req_cap = "package_install"
+        is_allowed = capabilities.get(req_cap, False)
+        if not is_allowed:
+            return False, req_cap, f"NPX executes arbitrary packages and requires '{req_cap}' capability which is disabled."
+        return True, req_cap, "Allowed npx operation"
 
     # 5. Default fallback to system_control
     req_cap = "system_control"

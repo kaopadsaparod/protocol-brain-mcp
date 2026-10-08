@@ -22,9 +22,10 @@ import psutil
 
 from ..config import load_config
 from ..logger import logger
+from ..security import redact_secrets
 
-# Metacharacters that could enable command chaining, redirection, or variable expansion
-FORBIDDEN_OPERATORS: Set[str] = set("&|<>^%\n\r`;")
+# Metacharacters that could enable command chaining, redirection, or backgrounding
+FORBIDDEN_OPERATORS: Set[str] = set("&|<>^\n\r`;")
 
 # Dangerous execution flags that allow arbitrary code execution inside allowed binaries
 DANGEROUS_FLAGS: Dict[str, Set[str]] = {
@@ -113,8 +114,17 @@ def resolve_executable(binary_name: str, cwd_path: Path, allowed_prefixes: List[
     elif clean_name.lower() == "npx":
         clean_name = "npx.cmd"
 
-    # Check for project venv Python if running python/pytest
-    if clean_name.lower() in ("python", "python.exe", "pytest"):
+    # Check for project venv Python if running python
+    if clean_name.lower() in ("python", "python.exe"):
+        venv_py = cwd_path / ".venv" / "Scripts" / "python.exe"
+        if venv_py.exists():
+            return venv_py
+
+    # Check for pytest specifically: venv pytest.exe -> venv python.exe -> system pytest -> system python
+    if clean_name.lower() in ("pytest", "pytest.exe"):
+        venv_pytest = cwd_path / ".venv" / "Scripts" / "pytest.exe"
+        if venv_pytest.exists():
+            return venv_pytest
         venv_py = cwd_path / ".venv" / "Scripts" / "python.exe"
         if venv_py.exists():
             return venv_py
@@ -122,6 +132,10 @@ def resolve_executable(binary_name: str, cwd_path: Path, allowed_prefixes: List[
     # Resolve strictly using system PATH
     system_path = os.environ.get("PATH", "")
     resolved_str = shutil.which(clean_name, path=system_path)
+    if not resolved_str and clean_name.lower() in ("pytest", "pytest.exe"):
+        # If pytest isn't an independent exe in PATH, resolve system python to execute via -m pytest
+        resolved_str = shutil.which("python", path=system_path) or sys.executable
+
     if not resolved_str:
         return None
 
@@ -135,7 +149,8 @@ def resolve_executable(binary_name: str, cwd_path: Path, allowed_prefixes: List[
     # Check against allowed prefixes
     base_stem = resolved_path.stem.lower()
     allowed_stems = {p.lower().split(".")[0] for p in allowed_prefixes}
-    if base_stem not in allowed_stems:
+    # If pytest was resolved via python.exe, verify either python or pytest is allowed
+    if base_stem not in allowed_stems and not (clean_name.lower().startswith("pytest") and "pytest" in allowed_stems):
         logger.warning(f"Executable '{base_stem}' not in allowed list: {allowed_stems}")
         return None
 
@@ -143,17 +158,25 @@ def resolve_executable(binary_name: str, cwd_path: Path, allowed_prefixes: List[
 
 
 def check_dangerous_flags(binary_name: str, args: List[str]) -> Optional[str]:
-    """Detects and rejects arbitrary execution flags like python -c or node -e."""
+    """
+    Detects and rejects arbitrary execution flags like python -c or node -e.
+    Flags for git are evaluated case-sensitively so 'git -C' is preserved.
+    """
     bin_lower = Path(binary_name).name.lower()
     flag_denylist = DANGEROUS_FLAGS.get(bin_lower) or DANGEROUS_FLAGS.get(Path(binary_name).stem.lower())
     if not flag_denylist:
         return None
 
+    is_git = bin_lower.startswith("git")
     for arg in args:
-        arg_lower = arg.lower().strip()
         for dangerous in flag_denylist:
-            if arg_lower == dangerous or arg_lower.startswith(f"{dangerous}="):
-                return f"Disallowed flag '{arg}' detected for binary '{binary_name}'."
+            if is_git:
+                if arg == dangerous or arg.startswith(f"{dangerous}="):
+                    return f"Disallowed flag '{arg}' detected for binary '{binary_name}'."
+            else:
+                arg_lower = arg.lower().strip()
+                if arg_lower == dangerous or arg_lower.startswith(f"{dangerous}="):
+                    return f"Disallowed flag '{arg}' detected for binary '{binary_name}'."
     return None
 
 
@@ -190,9 +213,13 @@ def run_safe_command(
 
     cfg = load_config()
 
-    # 2. Parse argument vector
+    # 2. Parse argument vector and strip outer quotes
     try:
-        argv = shlex.split(command.strip(), posix=False)
+        raw_argv = shlex.split(command.strip(), posix=False)
+        argv = [
+            t[1:-1] if (len(t) >= 2 and ((t.startswith('"') and t.endswith('"')) or (t.startswith("'") and t.endswith("'")))) else t
+            for t in raw_argv
+        ]
     except Exception as e:
         return {
             "success": False,
@@ -216,7 +243,7 @@ def run_safe_command(
 
     trusted_workspaces = [
         Path(w).resolve() if w != "." else Path.cwd().resolve()
-        for w in cfg.get("trusted_workspaces", [".", "D:\\vault"])
+        for w in cfg.get("trusted_workspaces", ["."])
     ]
     if not is_path_under_roots(work_dir, trusted_workspaces):
         return {
@@ -249,7 +276,7 @@ def run_safe_command(
 
     # 6. Capability-based policy evaluation
     from ..security import evaluate_command_capability
-    is_cap_allowed, req_cap, cap_reason = evaluate_command_capability(argv)
+    is_cap_allowed, req_cap, cap_reason = evaluate_command_capability(argv, cwd=work_dir)
     if not is_cap_allowed:
         return {
             "success": False,
@@ -263,7 +290,10 @@ def run_safe_command(
     enforced_timeout = min(max(1, timeout_seconds), max_timeout)
 
     # 7. Execute with shell=False and process tree management
-    cmd_list = [str(exe_path), *argv[1:]]
+    if argv[0].lower().startswith("pytest") and exe_path.name.lower().startswith("python"):
+        cmd_list = [str(exe_path), "-m", "pytest", *argv[1:]]
+    else:
+        cmd_list = [str(exe_path), *argv[1:]]
 
     try:
         proc = subprocess.Popen(
@@ -326,8 +356,8 @@ def run_safe_command(
             "success": proc.returncode == 0,
             "exit_code": proc.returncode,
             "command_executed": " ".join(cmd_list),
-            "stdout": truncate_output(stdout_str),
-            "stderr": truncate_output(stderr_str),
+            "stdout": truncate_output(redact_secrets(stdout_str)),
+            "stderr": truncate_output(redact_secrets(stderr_str)),
         }
     except Exception as e:
         logger.error(f"Error executing command '{cmd_list}': {e}")

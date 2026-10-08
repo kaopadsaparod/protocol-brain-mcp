@@ -23,6 +23,7 @@ if str(BASE_DIR) not in sys.path:
 
 from mcp.server.mcpserver import MCPServer
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.responses import JSONResponse
 
 from modules.code_intel import (
@@ -82,6 +83,7 @@ from modules.logger import logger
 from modules.observability import metrics, observe_tool
 from modules.security import (
     TOOL_CATEGORIES,
+    evaluate_tool_capability,
 )
 from modules.system import (
     free_port,
@@ -108,9 +110,43 @@ from modules.vault import (
 # Initialize MCP Server
 app = MCPServer(
     name="protocol-brain",
-    version="0.4.0",
+    version="0.5.0",
     description="Universal Second Brain, Deep Code Graph & Dev Stack Intelligence Gateway for AI Agents",
 )
+
+# Profile classification sets
+CORE_TOOLS = {
+    "read_vault_index", "get_note_by_wikilink", "search_vault_notes", "list_projects", "get_note_backlinks",
+    "get_file_outline", "read_single_symbol", "find_code_references", "truncate_build_errors",
+    "get_active_listening_ports", "check_system_and_gpu", "get_system_metrics", "get_security_policy",
+}
+
+DEV_TOOLS = CORE_TOOLS | {
+    "prepare_context", "inspect_project", "trace_error", "find_impact", "find_relevant_tests",
+    "git_context", "inspect_runtime", "inspect_local_services", "get_call_graph", "suggest_tests_for_change",
+    "find_changed_dependencies", "ask_codebase", "inspect_config_usage", "check_git_status", "get_git_diff",
+}
+
+
+def apply_server_profile(mcp_app: MCPServer, profile: str = "full"):
+    """Filters registered MCP tools based on the selected security profile."""
+    prof = profile.lower().strip()
+    if prof == "full":
+        return
+    elif prof == "dev":
+        allowed = DEV_TOOLS
+    elif prof == "core":
+        allowed = CORE_TOOLS
+    else:
+        logger.warning(f"Unknown profile '{profile}'. Defaulting to 'full'.")
+        return
+
+    current_tools = dict(mcp_app._tool_manager._tools)
+    mcp_app._tool_manager._tools.clear()
+    for name, tool in current_tools.items():
+        if name in allowed:
+            mcp_app._tool_manager._tools[name] = tool
+    logger.info(f"Applied profile '{prof}': exposing {len(mcp_app._tool_manager._tools)}/{len(current_tools)} tools.")
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
@@ -141,7 +177,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
 def create_authenticated_http_app(transport: str, host: str = "127.0.0.1", auth_token: Optional[str] = None):
     """
-    Creates and configures the Starlette application with BearerAuthMiddleware if auth_token is set.
+    Creates and configures the Starlette application with BearerAuthMiddleware and TrustedHostMiddleware.
     """
     if transport == "sse":
         starlette_app = app.sse_app(host=host)
@@ -149,6 +185,10 @@ def create_authenticated_http_app(transport: str, host: str = "127.0.0.1", auth_
         starlette_app = app.streamable_http_app(host=host)
     else:
         raise ValueError(f"Unsupported HTTP transport: {transport}")
+
+    # DNS Rebinding defense for loopback bindings
+    if host in ("127.0.0.1", "localhost", "::1"):
+        starlette_app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "::1", "testserver"])
 
     if auth_token:
         starlette_app.add_middleware(BearerAuthMiddleware, token=auth_token)
@@ -329,8 +369,16 @@ def truncate_build_errors(raw_terminal_log: str) -> Dict[str, Any]:
 def release_port(port: int) -> Dict[str, Any]:
     """
     [DANGEROUS] Terminate any process listening on the specified user-space TCP port (1024-65535).
-    Guarded by process denylist, ancestor protection, and post-kill verification.
+    Requires 'process_termination' capability. Guarded by process denylist, ancestor protection, and post-kill verification.
     """
+    is_allowed, cap, reason = evaluate_tool_capability("release_port")
+    if not is_allowed:
+        return {
+            "success": False,
+            "port": port,
+            "error": f"Operation rejected by capability policy: {reason}",
+            "actionable_hint": "Enable 'process_termination': true in config.json or config.local.json under 'capabilities'.",
+        }
     return free_port(port)
 
 
@@ -645,8 +693,17 @@ def main():
         action="store_true",
         help="Allow binding to non-loopback address without authentication (NOT RECOMMENDED)",
     )
+    parser.add_argument(
+        "--profile",
+        choices=["core", "dev", "full"],
+        default="full",
+        help="Tool exposure profile: 'core' (read-only second brain + AST), 'dev' (core + code context + git), 'full' (all tools)",
+    )
 
     args = parser.parse_args()
+
+    # Apply selected tool exposure profile
+    apply_server_profile(app, args.profile)
 
     # Load configuration with CLI overrides
     cli_overrides = {}

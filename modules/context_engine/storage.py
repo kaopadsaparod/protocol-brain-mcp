@@ -79,12 +79,15 @@ CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 """
 
 
+import hashlib
+
+
 def resolve_index_db_path(root_dir: Optional[Path] = None) -> Path:
     """
     Resolves the persistent SQLite index path.
     1. Check config override or PROTOCOL_BRAIN_INDEX_DB
     2. Try <workspace_root>/.protocol_brain/index.db
-    3. Fallback to %LOCALAPPDATA%/ProtocolBrain/cache/index.db
+    3. Fallback to %LOCALAPPDATA%/ProtocolBrain/cache/index_<hash>.db (isolated per workspace)
     """
     cfg = load_config()
     configured_path = cfg.get("context_engine", {}).get("index_db_path") or os.environ.get("PROTOCOL_BRAIN_INDEX_DB")
@@ -93,7 +96,7 @@ def resolve_index_db_path(root_dir: Optional[Path] = None) -> Path:
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
-    base_root = root_dir or Path.cwd()
+    base_root = (root_dir or Path.cwd()).resolve()
     workspace_db_dir = base_root / ".protocol_brain"
     try:
         workspace_db_dir.mkdir(parents=True, exist_ok=True)
@@ -101,17 +104,19 @@ def resolve_index_db_path(root_dir: Optional[Path] = None) -> Path:
     except Exception as e:
         logger.warning(f"Could not create workspace .protocol_brain directory: {e}. Falling back to user cache.")
 
+    path_hash = hashlib.sha256(str(base_root).lower().encode()).hexdigest()[:16]
     local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
     fallback_dir = Path(local_app_data) / "ProtocolBrain" / "cache"
     fallback_dir.mkdir(parents=True, exist_ok=True)
-    return (fallback_dir / "index.db").resolve()
+    return (fallback_dir / f"index_{path_hash}.db").resolve()
 
 
 class DatabaseManager:
     """Thread-safe SQLite connection and transaction manager."""
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None, root_dir: Optional[Path] = None):
         self._explicit_path = db_path
+        self._root_dir = root_dir
         self._lock = threading.RLock()
         self._initialized = False
 
@@ -119,7 +124,7 @@ class DatabaseManager:
     def db_path(self) -> Path:
         if self._explicit_path:
             return self._explicit_path
-        return resolve_index_db_path()
+        return resolve_index_db_path(self._root_dir)
 
     def get_connection(self) -> sqlite3.Connection:
         """Returns a configured SQLite connection with foreign keys and WAL mode."""

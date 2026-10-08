@@ -40,7 +40,7 @@ def get_call_graph(
         norm_direction = "downstream"
 
     root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
-    storage = IndexStorage()
+    storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
     indexer.index_workspace(max_depth=3)
 

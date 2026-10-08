@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Set
 
 import psutil
 
+from ..config import load_config
 from ..logger import logger
 
 # Critical services and tools that should never be terminated by port killer
@@ -87,7 +88,7 @@ def list_listening_ports() -> List[Dict[str, Any]]:
     return results
 
 
-def free_port(port: int) -> Dict[str, Any]:
+def free_port(port: int, bypass_capability: bool = False) -> Dict[str, Any]:
     """
     Terminates processes listening on a user-space TCP port (1024-65535).
     Guards ancestors, enforces denylists, terminates children, and verifies availability.
@@ -98,6 +99,16 @@ def free_port(port: int) -> Dict[str, Any]:
             "port": port,
             "error": f"Invalid port {port}. Port must be a user-space port between 1024 and 65535.",
             "actionable_hint": "System ports (0-1023) are protected. Target dev ports like 3000, 5173, or 8000.",
+        }
+
+    cfg = load_config()
+    capabilities = cfg.get("capabilities", {})
+    if not bypass_capability and not capabilities.get("process_termination", False):
+        return {
+            "success": False,
+            "port": port,
+            "error": "Process termination capability ('process_termination') is disabled in security policy.",
+            "actionable_hint": "Enable 'process_termination': true in config.json or config.local.json under 'capabilities'.",
         }
 
     protected_pids = get_protected_pids()

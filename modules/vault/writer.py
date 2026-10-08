@@ -4,6 +4,7 @@ Provides safe appending, YAML Frontmatter updates, and note creation without ove
 """
 
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -49,11 +50,11 @@ def append_to_existing_note(
             }
 
     target_file = resolve_wikilink_path(vault, note_identifier)
-    if not target_file:
+    if not target_file or not is_safe_vault_path(target_file, vault) or target_file.suffix.lower() != ".md":
         return {
             "success": False,
-            "error": f"Note '{note_identifier}' not found in vault.",
-            "actionable_hint": "Use 'create_new_note' if you want to create a brand new note.",
+            "error": f"Note '{note_identifier}' not found or targets an invalid/protected file.",
+            "actionable_hint": "Vault notes must be .md files located within the vault root.",
         }
 
     try:
@@ -110,11 +111,11 @@ def update_note_frontmatter(
     vault = get_vault_path()
     target_file = resolve_wikilink_path(vault, note_identifier)
 
-    if not target_file:
+    if not target_file or not is_safe_vault_path(target_file, vault) or target_file.suffix.lower() != ".md":
         return {
             "success": False,
-            "error": f"Note '{note_identifier}' not found.",
-            "actionable_hint": "Verify note name with 'search_vault_notes'.",
+            "error": f"Note '{note_identifier}' not found or targets an invalid/protected file.",
+            "actionable_hint": "Verify note name with 'search_vault_notes'. Notes must be .md files.",
         }
 
     try:
@@ -171,7 +172,7 @@ def create_vault_note(
 ) -> Dict[str, Any]:
     """
     Create a new note in the vault with standard YAML frontmatter.
-    Guards against path traversal and accidental overwrite.
+    Guards against path traversal, hidden directories, and accidental overwrite.
     """
     vault = get_vault_path()
 
@@ -179,12 +180,20 @@ def create_vault_note(
     if not clean_path.endswith(".md"):
         clean_path += ".md"
 
-    target_file = (vault / clean_path).resolve()
-    if not is_safe_vault_path(target_file, vault):
+    # Reject hidden folders (.obsidian, .git, etc.)
+    if any(segment.startswith(".") for segment in Path(clean_path).parts):
         return {
             "success": False,
-            "error": "Path traversal detected: target path is outside vault root.",
-            "actionable_hint": "Specify a relative path within the vault root (e.g. '02_Projects/my_project.md').",
+            "error": "Target path contains hidden or restricted directory segment.",
+            "actionable_hint": "Specify a relative path without leading dots or hidden directories.",
+        }
+
+    target_file = (vault / clean_path).resolve()
+    if not is_safe_vault_path(target_file, vault) or target_file.suffix.lower() != ".md":
+        return {
+            "success": False,
+            "error": "Path traversal or invalid file type detected: target path is outside vault root.",
+            "actionable_hint": "Specify a relative path within the vault root ending in .md (e.g. '02_Projects/my_project.md').",
         }
 
     if target_file.exists():

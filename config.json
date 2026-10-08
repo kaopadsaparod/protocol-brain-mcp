@@ -10,15 +10,15 @@
     "F:\\"
   ],
   "trusted_workspaces": [
-    ".",
-    "D:\\vault"
+    "."
   ],
   "capabilities": {
     "git_read": true,
     "git_write": false,
     "run_tests": true,
     "package_install": false,
-    "system_control": false
+    "system_control": false,
+    "process_termination": false
   },
   "allowed_shell_prefixes": [
     "git",

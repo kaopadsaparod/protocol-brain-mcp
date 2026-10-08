@@ -259,7 +259,7 @@ def inspect_project(
     # Check local index stats if storage exists
     index_stats = {"indexed_files": 0, "indexed_symbols": 0}
     try:
-        storage = IndexStorage()
+        storage = IndexStorage(root_dir=root)
         conn = storage.get_connection()
         cur = conn.cursor()
         cur.execute("SELECT COUNT(*) FROM files")

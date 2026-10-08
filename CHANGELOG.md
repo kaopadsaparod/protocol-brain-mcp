@@ -5,6 +5,37 @@ All notable changes to Protocol Brain will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-10-09
+
+### Security Hardening & Integrity
+- **PowerShell Notification Parameterization (`notification.py`):**
+  - Parameterized native toast notifications via `$env:PB_NOTIF_TITLE` and `$env:PB_NOTIF_MSG` environment variables. Eliminated script interpolation, rendering notifications immune to quotes, double quotes, and Unicode smart quote escapes.
+- **Capability-Based Policy Engine Hardening (`policy.py`):**
+  - Defended against path traversal bypass in `run_tests` (`python tests/../malicious.py`) by resolving target paths strictly against `<workspace>/tests/` and checking `.py` extension.
+  - Hardened `git_read`: blocked file-writing flags (`--output`, `-o`) and out-of-bounds reads (`--no-index`).
+  - Classified mutating git actions (`branch -D`, `tag -d`, `remote add`), code modifying commands (`ruff --fix`, `ruff format`), and registry package execution (`npx`) as privileged operations requiring explicit capability authorization.
+  - Introduced `process_termination` capability to govern `release_port` (disabled by default in configuration).
+- **Hardened Shell Runner (`shell_runner.py`):**
+  - Unbanned `%` from `FORBIDDEN_OPERATORS` to restore support for legitimate format strings (`git log --format="%h"`), which are safe under `shell=False`.
+  - Stripped outer quotes from argument tokens on Windows to prevent path and flag corruption in `subprocess.Popen`.
+  - Made git dangerous flag checks case-sensitive, resolving false-positive rejections of `git -C <dir>` (change directory).
+  - Fixed `pytest` resolution in `.venv` to run correctly via `python.exe -m pytest`.
+  - Wired heuristic secret sanitization into all command stdout and stderr outputs.
+- **Obsidian Vault Confinement (`writer.py`, `reader.py`):**
+  - Restricted vault operations strictly to `.md` files and blocked traversal into hidden/system directories (`.obsidian`, `.git`, `.vscode`).
+  - Removed `D:\vault` from `trusted_workspaces` in default configuration.
+- **Multi-Project SQLite Index Isolation (`storage.py`):**
+  - Isolated SQLite context indexes per workspace directory, and applied SHA-256 workspace path hashing for fallback user cache paths to prevent cross-project index deletion during pruning.
+- **Heuristic Secret Redaction (`sanitizer.py`):**
+  - Created centralized multi-pattern masking covering GitHub tokens, API keys, Bearer tokens, private keys, passwords, and database connection strings.
+- **Server Profiles & DNS Rebinding Defense (`server.py`):**
+  - Added `--profile core|dev|full` CLI flag to minimize exposed attack surface according to deployment needs.
+  - Added Starlette `TrustedHostMiddleware` for loopback transports to defend against DNS rebinding attacks.
+- **Hierarchical Deep Config Merging (`config.py`):**
+  - Replaced shallow dictionary updating with recursive `deep_merge`, ensuring partial overrides in `config.local.json` preserve sibling capabilities and settings.
+- **Test Suite Expansion:**
+  - Expanded automated test coverage from 88 to 103 tests across 18 test suites (100% pass rate).
+
 ## [0.4.0] - 2026-10-09
 
 ### Added

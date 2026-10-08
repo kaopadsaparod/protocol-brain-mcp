@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 
 import psutil
 
+from ..security import redact_secrets
 from .call_graph import get_call_graph
 from .indexer import IncrementalIndexer
 from .packer import estimate_tokens, extract_slice_from_disk
@@ -41,7 +42,7 @@ def answer_port_question(question: str) -> Optional[Dict[str, Any]]:
                         try:
                             p = psutil.Process(pid)
                             proc_name = p.name()
-                            cmd_line = " ".join(p.cmdline()[:4])
+                            cmd_line = redact_secrets(" ".join(p.cmdline()[:4]))
                             if p.parent():
                                 parent_name = p.parent().name()
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -106,7 +107,7 @@ def ask_codebase(
 
     # 2. Architectural Flow Extraction
     root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
-    storage = IndexStorage()
+    storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
     indexer.index_workspace(max_depth=3)
 

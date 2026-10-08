@@ -25,7 +25,7 @@ def test_system_health_success():
 
 def test_free_port_on_unused_port():
     """Edge Case: Releasing a port where no process is listening returns cleanly."""
-    res = free_port(59876)
+    res = free_port(59876, bypass_capability=True)
     assert res["success"] is True
     assert "already free" in res["message"]
     assert res["terminated"] == []

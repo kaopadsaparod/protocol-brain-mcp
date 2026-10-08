@@ -84,7 +84,7 @@ def suggest_tests_for_change(
             "recommended_commands": [],
         }
 
-    storage = IndexStorage()
+    storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
     indexer.index_workspace(max_depth=3)
 
@@ -239,7 +239,7 @@ def find_changed_dependencies(
         }
 
     hunks = parse_diff_hunks(diff_content)
-    storage = IndexStorage()
+    storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
     indexer.index_workspace(max_depth=3)
 

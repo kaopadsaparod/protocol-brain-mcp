@@ -7,7 +7,6 @@ Provides:
 
 import functools
 import json
-import re
 import threading
 import time
 import uuid
@@ -15,26 +14,15 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from .logger import logger
-from .security import ToolCategory, get_tool_category
+from .security import ToolCategory, get_tool_category, redact_secrets
 
-# Regex patterns for sensitive tokens and secrets to redact from logs
-SECRET_PATTERNS = [
-    re.compile(r"(ghp_[A-Za-z0-9_]{36,})"),
-    re.compile(r"(gho_[A-Za-z0-9_]{36,})"),
-    re.compile(r"(sk-[A-Za-z0-9-_]{20,})"),
-    re.compile(r"(bearer\s+[A-Za-z0-9-_\.]+)", re.IGNORECASE),
-    re.compile(r"((api[_-]?key|password|secret|token)\s*[:=]\s*['\"][^'\"]+['\"])", re.IGNORECASE),
+__all__ = [
+    "redact_secrets",
+    "MetricsRegistry",
+    "metrics",
+    "ObservabilityContext",
+    "observe_tool",
 ]
-
-
-def redact_secrets(text: str) -> str:
-    """Replaces sensitive tokens and keys with redacted placeholders."""
-    if not isinstance(text, str):
-        return text
-    sanitized = text
-    for pattern in SECRET_PATTERNS:
-        sanitized = pattern.sub("[REDACTED_SECRET]", sanitized)
-    return sanitized
 
 
 class MetricsRegistry:

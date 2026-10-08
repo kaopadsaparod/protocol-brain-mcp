@@ -54,11 +54,13 @@ def test_shell_redirect():
         assert res["success"] is False
 
 
-def test_env_expansion():
-    """Variable expansion (%VAR%, ^%VAR^%) must be rejected."""
-    res = run_safe_command("git status %COMSPEC%", cwd=str(PROJECT_ROOT))
-    assert res["success"] is False
-    assert "strictly forbidden" in res["error"]
+def test_percent_format_allowed():
+    """Format strings with % (e.g. git log --format=%h) must be permitted and not blocked."""
+    res = run_safe_command("git status", cwd=str(PROJECT_ROOT))
+    assert res["success"] is True
+    # Test that % in arguments is not treated as a forbidden operator
+    res_fmt = run_safe_command("git log -n 1 --format=%h", cwd=str(PROJECT_ROOT))
+    assert "strictly forbidden" not in res_fmt.get("error", "")
 
 
 def test_fake_executable_in_cwd(tmp_path):
@@ -165,14 +167,21 @@ def test_port_below_1024_rejected():
         assert "between 1024 and 65535" in res["error"]
 
 
+def test_free_port_requires_process_termination_capability():
+    """Calling free_port without process_termination capability enabled must be blocked."""
+    res = free_port(59122)
+    assert res["success"] is False
+    assert "process_termination" in res["error"]
+
+
 def test_process_dies_during_wait_is_success():
     """If a process exits naturally before/during wait, it must be considered a success."""
-    res = free_port(59123)  # Empty unassigned port
+    res = free_port(59123, bypass_capability=True)  # Empty unassigned port
     assert res["success"] is True
     assert "already free" in res["message"]
 
 
 def test_port_is_verified_free_after_termination():
     """Empty port verification check must return verified_free status."""
-    res = free_port(59124)
+    res = free_port(59124, bypass_capability=True)
     assert res["success"] is True

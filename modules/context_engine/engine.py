@@ -57,7 +57,7 @@ def prepare_context(
         return cached_result
 
     # 1. Incremental Index Update
-    storage = IndexStorage()
+    storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
     index_res = indexer.index_workspace(max_depth=3)
 

@@ -31,7 +31,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     ],
     "trusted_workspaces": [
         ".",
-        "D:\\vault",
     ],
     "capabilities": {
         "git_read": True,
@@ -39,6 +38,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "run_tests": True,
         "package_install": False,
         "system_control": False,
+        "process_termination": False,
     },
     "allowed_shell_prefixes": [
         "git",
@@ -62,9 +62,27 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Recursively merges override into base dictionary without wiping sibling keys.
+    """
+    merged = dict(base)
+    for key, val in override.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(val, dict):
+            merged[key] = deep_merge(merged[key], val)
+        else:
+            merged[key] = val
+    return merged
+
+
 def load_config(cli_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
-    Loads configuration following strict hierarchical precedence.
+    Loads configuration following strict hierarchical precedence:
+    1. CLI overrides
+    2. Environment variables
+    3. config.local.json (deep merged)
+    4. config.json (deep merged)
+    5. DEFAULT_CONFIG
     """
     config = dict(DEFAULT_CONFIG)
 
@@ -76,7 +94,7 @@ def load_config(cli_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         try:
             with open(target_config, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
-                config.update(loaded)
+                config = deep_merge(config, loaded)
         except Exception as e:
             logger.warning(f"Failed to parse config file {target_config}: {e}")
 
@@ -85,7 +103,7 @@ def load_config(cli_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         try:
             with open(LOCAL_CONFIG_FILE, "r", encoding="utf-8") as f:
                 local_loaded = json.load(f)
-                config.update(local_loaded)
+                config = deep_merge(config, local_loaded)
         except Exception as e:
             logger.warning(f"Failed to parse {LOCAL_CONFIG_FILE.name}: {e}")
 
@@ -104,8 +122,7 @@ def load_config(cli_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any
 
     # 4. CLI overrides (highest precedence)
     if cli_overrides:
-        for k, v in cli_overrides.items():
-            if v is not None:
-                config[k] = v
+        clean_overrides = {k: v for k, v in cli_overrides.items() if v is not None}
+        config = deep_merge(config, clean_overrides)
 
     return config

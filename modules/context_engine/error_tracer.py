@@ -176,7 +176,7 @@ def trace_error(
     crash_site = project_frames[-1] if project_frames else (frames[-1] if frames else None)
 
     # Initialize storage and indexer to find symbol details
-    storage = IndexStorage()
+    storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
 
     crash_code_slice = ""

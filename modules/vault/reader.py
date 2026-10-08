@@ -34,11 +34,26 @@ def get_vault_path() -> Path:
 
 
 def is_safe_vault_path(target: Path, vault: Path) -> bool:
-    """Guards against Path Traversal vulnerabilities (e.g. ../../Windows)."""
+    """
+    Guards against Path Traversal vulnerabilities and hidden/system directory access.
+    Enforces that target resides within vault root and contains no hidden path segments.
+    """
     try:
         resolved_target = target.resolve()
         resolved_vault = vault.resolve()
-        return resolved_vault in resolved_target.parents or resolved_target == resolved_vault
+        if not (resolved_vault in resolved_target.parents or resolved_target == resolved_vault):
+            return False
+
+        # Reject any path traversing hidden directories (.obsidian, .git, .vscode, etc.)
+        rel_parts = resolved_target.relative_to(resolved_vault).parts
+        if any(part.startswith(".") for part in rel_parts):
+            return False
+
+        # Reject non-markdown files inside vault if target has an extension
+        if resolved_target.suffix and resolved_target.suffix.lower() != ".md":
+            return False
+
+        return True
     except Exception:
         return False
 
@@ -46,7 +61,8 @@ def is_safe_vault_path(target: Path, vault: Path) -> bool:
 def resolve_wikilink_path(vault_path: Path, note_identifier: str) -> Optional[Path]:
     """
     Resolve a wikilink like '[[01_AI_Penetration_Testing]]' or relative path
-    to a concrete file path in the vault.
+    to a concrete markdown (.md) file path in the vault.
+    Strictly enforces .md extension and rejects hidden paths (.obsidian, .git).
     """
     clean_name = note_identifier.strip()
     if clean_name.startswith("[[") and clean_name.endswith("]]"):
@@ -56,9 +72,13 @@ def resolve_wikilink_path(vault_path: Path, note_identifier: str) -> Optional[Pa
     if "|" in clean_name:
         clean_name = clean_name.split("|")[0].strip()
 
-    # Direct relative path check
+    # Reject attempt to target hidden directory directly
+    if any(segment.startswith(".") for segment in Path(clean_name).parts):
+        return None
+
+    # Direct relative path check (must end with .md)
     candidate = (vault_path / clean_name).resolve()
-    if is_safe_vault_path(candidate, vault_path) and candidate.exists() and candidate.is_file():
+    if candidate.suffix.lower() == ".md" and is_safe_vault_path(candidate, vault_path) and candidate.exists() and candidate.is_file():
         return candidate
 
     if not clean_name.endswith(".md"):
