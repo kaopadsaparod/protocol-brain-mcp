@@ -1,11 +1,21 @@
 {
-  "vault_path": "D:\\vault",
-  "libreoffice_path": "C:\\Program Files\\LibreOffice\\program\\soffice.com",
+  "vault_path": null,
+  "libreoffice_path": null,
+  "host": "127.0.0.1",
+  "port": 8000,
+  "auth_token": null,
   "allowed_roots": [
     "C:\\Users",
     "D:\\",
     "F:\\"
   ],
+  "capabilities": {
+    "git_read": true,
+    "git_write": false,
+    "run_tests": true,
+    "package_install": false,
+    "system_control": false
+  },
   "allowed_shell_prefixes": [
     "git",
     "python",

@@ -196,13 +196,24 @@ def run_safe_command(
             "exit_code": -1,
         }
 
-    # 5. Dangerous flags check
+    # 5. Dangerous flags check (inspect flags immediately before any execution or capability evaluation)
     flag_err = check_dangerous_flags(exe_path.name, argv[1:])
     if flag_err:
         return {
             "success": False,
             "error": flag_err,
             "actionable_hint": "Arbitrary inline evaluation flags (-c, -e) are blocked to prevent prompt injection.",
+            "exit_code": -1,
+        }
+
+    # 6. Capability-based policy evaluation
+    from ..security import evaluate_command_capability
+    is_cap_allowed, req_cap, cap_reason = evaluate_command_capability(argv)
+    if not is_cap_allowed:
+        return {
+            "success": False,
+            "error": f"Operation rejected by capability policy: {cap_reason}",
+            "actionable_hint": f"The '{req_cap}' capability is disabled. Enable it in config.json or config.local.json under 'capabilities'.",
             "exit_code": -1,
         }
 

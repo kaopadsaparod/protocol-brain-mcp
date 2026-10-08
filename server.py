@@ -3,9 +3,11 @@ Protocol Brain - Universal MCP Server
 Bridging Obsidian Second Brain, Token-saving Code Intelligence, and Windows OS Power Tools
 for AI Agents (agy, Claude Code, Ollama, Terminal AI).
 
-CRITICAL ARCHITECTURE RULE:
-Never output logs to stdout! Stdout is strictly reserved for the MCP JSON-RPC protocol.
-All logging is routed through 'modules.logger' to stderr and rotating log files.
+CRITICAL ARCHITECTURE RULES:
+1. Never output logs to stdout! Stdout is strictly reserved for the MCP JSON-RPC protocol.
+   All logging is routed through 'modules.logger' to stderr and rotating log files.
+2. Transport Security: Non-loopback binding requires explicit authentication.
+3. Capability-Based Execution: Shell actions are scoped by granular permissions.
 """
 
 import argparse
@@ -27,8 +29,13 @@ from modules.code_intel import (
     get_code_outline,
     read_symbol,
 )
+from modules.config import load_config
 from modules.docs import convert_document_to_pdf
 from modules.logger import logger
+from modules.observability import metrics
+from modules.security import (
+    TOOL_CATEGORIES,
+)
 from modules.system import (
     free_port,
     get_git_diff_summary,
@@ -54,13 +61,13 @@ from modules.vault import (
 # Initialize MCP Server
 app = MCPServer(
     name="protocol-brain",
-    version="0.2.0",
-    description="Universal Second Brain & Windows Power Tools Gateway for AI Agents",
+    version="0.2.1",
+    description="Universal Second Brain & Hardened Windows Power Tools Gateway for AI Agents",
 )
 
 
 # ==============================================================================
-# 🧠 1. Obsidian Second Brain Tools & Resources
+# 🧠 1. Obsidian Second Brain Tools & Resources (SAFE & MUTATING)
 # ==============================================================================
 
 @app.resource("vault://index")
@@ -163,7 +170,7 @@ def open_note_in_obsidian(identifier: str) -> Dict[str, Any]:
 
 
 # ==============================================================================
-# 🔍 2. Code Intelligence & Token Optimization Tools (serena / ast-grep style)
+# 🔍 2. Code Intelligence & Token Savers (SAFE)
 # ==============================================================================
 
 @app.tool()
@@ -191,7 +198,7 @@ def read_single_symbol(file_path: str, symbol_name: str) -> Dict[str, Any]:
 def find_code_references(
     query: str,
     root_dir: Optional[str] = None,
-    context_lines: int = 2
+    context_lines: int = 2,
 ) -> Dict[str, Any]:
     """
     Contextual grep across the codebase or vault with preceding/succeeding lines.
@@ -210,14 +217,14 @@ def truncate_build_errors(raw_terminal_log: str) -> Dict[str, Any]:
 
 
 # ==============================================================================
-# ⚙️ 3. Windows Guard & Git Power Tools (desktop-commander style)
+# ⚙️ 3. Windows Guard & Git Power Tools (DANGEROUS & SAFE)
 # ==============================================================================
 
 @app.tool()
 def release_port(port: int) -> Dict[str, Any]:
     """
-    Terminate any process listening on the specified TCP port (e.g. 3000, 8000, 5173).
-    Solves Windows 'EADDRINUSE: address already in use' errors instantly.
+    [DANGEROUS] Terminate any process listening on the specified user-space TCP port (1024-65535).
+    Guarded by process denylist, ancestor protection, and post-kill verification.
     """
     return free_port(port)
 
@@ -240,10 +247,9 @@ def check_system_and_gpu() -> Dict[str, Any]:
 @app.tool()
 def run_windows_command(command: str, cwd: Optional[str] = None, timeout_seconds: int = 60) -> Dict[str, Any]:
     """
-    Safely execute an allowed shell command on Windows.
-    Automatically substitutes 'npm' -> 'npm.cmd' and 'npx' -> 'npx.cmd'
-    to prevent PowerShell ExecutionPolicy restrictions, detects local .venv python,
-    and enforces strict command prefix allowlist from config.json.
+    [DANGEROUS] Safely execute a scoped command on Windows.
+    Hardened by shell=False, metacharacter defense, CWD boundary checks,
+    timeout ceiling, and capability-based policy evaluation.
     """
     return run_safe_command(command, cwd=cwd, timeout_seconds=timeout_seconds)
 
@@ -286,7 +292,33 @@ def convert_to_thai_pdf(input_file: str, output_directory: Optional[str] = None)
 
 
 # ==============================================================================
-# 💬 5. MCP Prompts
+# 🛡️ 5. Security Policy & Observability Inspection Tools (SAFE)
+# ==============================================================================
+
+@app.tool()
+def get_security_policy() -> Dict[str, Any]:
+    """
+    Inspect active server capabilities, allowed roots, and tool categories (SAFE, MUTATING, DANGEROUS).
+    """
+    cfg = load_config()
+    return {
+        "capabilities": cfg.get("capabilities", {}),
+        "allowed_roots": cfg.get("allowed_roots", []),
+        "allowed_shell_prefixes": cfg.get("allowed_shell_prefixes", []),
+        "tool_categories": {k: v.value for k, v in TOOL_CATEGORIES.items()},
+    }
+
+
+@app.tool()
+def get_system_metrics() -> Dict[str, Any]:
+    """
+    Inspect live runtime metrics: tool usage count, success rate, average latency, and tokens saved.
+    """
+    return metrics.get_snapshot()
+
+
+# ==============================================================================
+# 💬 6. MCP Prompts
 # ==============================================================================
 
 @app.prompt()
@@ -301,7 +333,7 @@ def bootstrap_session() -> str:
 
 
 # ==============================================================================
-# 🚀 Entrypoint
+# 🚀 Entrypoint & Transport Security
 # ==============================================================================
 
 def main():
@@ -312,21 +344,57 @@ def main():
         default="stdio",
         help="Transport mode (default: stdio for agy/Claude Code; sse/streamable-http for WebUI/remote)",
     )
-    parser.add_argument("--port", type=int, default=8000, help="Port for SSE/HTTP transports (default: 8000)")
-    parser.add_argument("--host", type=str, default="127.0.0.1", help="Host address (default: 127.0.0.1)")
+    parser.add_argument("--host", type=str, default=None, help="Host address (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=None, help="Port for SSE/HTTP transports (default: 8000)")
+    parser.add_argument("--vault", type=str, default=None, help="Explicit vault path override")
+    parser.add_argument("--auth-token", type=str, default=None, help="Bearer token for HTTP/SSE authentication")
+    parser.add_argument(
+        "--allow-remote-unauthenticated",
+        action="store_true",
+        help="Allow binding to non-loopback address without authentication (NOT RECOMMENDED)",
+    )
 
     args = parser.parse_args()
+
+    # Load configuration with CLI overrides
+    cli_overrides = {}
+    if args.vault:
+        cli_overrides["vault_path"] = args.vault
+    if args.host:
+        cli_overrides["host"] = args.host
+    if args.port:
+        cli_overrides["port"] = args.port
+    if args.auth_token:
+        cli_overrides["auth_token"] = args.auth_token
+
+    cfg = load_config(cli_overrides)
+    bind_host = cfg.get("host", "127.0.0.1")
+    bind_port = cfg.get("port", 8000)
+    auth_token = cfg.get("auth_token")
 
     logger.info(f"Protocol Brain initializing with transport '{args.transport}'")
 
     if args.transport == "stdio":
         app.run(transport="stdio")
-    elif args.transport == "sse":
-        logger.info(f"Starting Protocol Brain on SSE at http://{args.host}:{args.port}/sse")
-        app.run(transport="sse", host=args.host, port=args.port)
-    elif args.transport == "streamable-http":
-        logger.info(f"Starting Protocol Brain on Streamable HTTP at http://{args.host}:{args.port}/mcp")
-        app.run(transport="streamable-http", host=args.host, port=args.port)
+    elif args.transport in ("sse", "streamable-http"):
+        # Transport Security Validation
+        is_loopback = bind_host in ("127.0.0.1", "localhost", "::1")
+        if not is_loopback and not auth_token and not args.allow_remote_unauthenticated:
+            err_msg = (
+                f"SECURITY REJECTION: Binding to non-loopback host '{bind_host}' without authentication "
+                "is strictly blocked. Specify --auth-token, set PROTOCOL_BRAIN_AUTH_TOKEN, "
+                "or pass --allow-remote-unauthenticated."
+            )
+            logger.error(err_msg)
+            sys.stderr.write(f"\n{err_msg}\n")
+            sys.exit(1)
+
+        if args.transport == "sse":
+            logger.info(f"Starting Protocol Brain on SSE at http://{bind_host}:{bind_port}/sse")
+            app.run(transport="sse", host=bind_host, port=bind_port)
+        elif args.transport == "streamable-http":
+            logger.info(f"Starting Protocol Brain on Streamable HTTP at http://{bind_host}:{bind_port}/mcp")
+            app.run(transport="streamable-http", host=bind_host, port=bind_port)
 
 
 if __name__ == "__main__":
