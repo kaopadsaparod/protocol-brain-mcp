@@ -1,0 +1,33 @@
+[project]
+name = "protocol-brain"
+version = "0.2.0"
+description = "Universal MCP Server bridging Obsidian Second Brain, Token-saving Code Intelligence, and Windows OS Power Tools for AI Agents (agy, Claude Code, Ollama)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp==2.3.0",
+    "psutil>=6.1.0",
+    "pydantic>=2.10.0",
+    "pyyaml>=6.0.2"
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=9.0.0",
+    "ruff>=0.9.0"
+]
+
+[project.scripts]
+protocol-brain = "server:main"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E501", "E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
