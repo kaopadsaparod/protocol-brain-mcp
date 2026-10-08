@@ -8,14 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.2.1] - 2026-10-09
 
 ### Added
-- **Security Policy & Capability-Based Execution:** Scoped OS execution into `git_read`, `git_write`, `run_tests`, `package_install`, and `system_control`.
-- **Tool Classification:** Classified all tools into `SAFE`, `MUTATING`, and `DANGEROUS`.
-- **Security Regression Test Suite:** 19 automated tests targeting command injection, metacharacters, operator chaining, CWD escapes, dangerous flags, and process protection.
-- **Real MCP Protocol Integration Suite:** Added `tests/test_mcp_integration.py` performing full JSON-RPC stdio round-trips via `mcp.client`.
-- **Hierarchical Configuration Precedence:** CLI overrides > Environment variables (`PROTOCOL_BRAIN_*`) > `config.local.json` > `config.json`.
-- **Transport Security:** Block unauthenticated binding to non-loopback addresses (`0.0.0.0`) on HTTP/SSE.
-- **Observability & Metrics:** Structured JSON event logging with secret redaction and runtime metrics tracking (`get_system_metrics`, `get_security_policy`).
-- **Standard Project Files:** Added `LICENSE` (MIT), `SECURITY.md`, `CONTRIBUTING.md`, and `CHANGELOG.md`.
+- **HTTP / SSE Request-Time Bearer Authentication:** Built `BearerAuthMiddleware` on Starlette ASGI app enforcing `Authorization: Bearer <token>` on `/mcp`, `/sse` with `401 Unauthorized` for invalid or missing credentials.
+- **Universal Tool Observability & Thread-Safe Metrics:** Wired `@observe_tool` decorator across all 24 tools, updating `MetricsRegistry` protected by `threading.RLock()` and recording latency, success rate, error categorization, and token savings.
+- **Narrowed Execution Roots (`trusted_workspaces`):** Restricted shell execution `cwd` exclusively to vetted workspaces (repo root, `D:\vault`) to eliminate untrusted repo `conftest.py` execution risks.
+- **Binary PATH Hijacking Defense:** Hardened `resolve_executable` to block binaries in unvetted directories (`Downloads`, `Temp`, CWD) and restrict execution to verified system and runtime directories.
+- **Process Killer TOCTOU Defense:** Guarded `free_port` against Windows PID recycling races by verifying `create_time` before process termination.
+- **Real Timeout Subprocess Fixture:** Added `tests/fixtures/sleep_process.py` and regression tests verifying real timeout and recursive process-tree termination.
+- **5-Tier Tool Security Taxonomy:** Expanded classification to `READ_ONLY`, `USER_VISIBLE`, `DATA_MUTATION`, `PROCESS_EXECUTION`, and `PROCESS_TERMINATION`.
+- **GitHub Actions Windows CI Matrix:** Added `.github/workflows/ci.yml` testing across Python 3.11, 3.12, and 3.13 on `windows-latest`.
+- **Security Regression Suite Expansion:** Expanded automated test suite from 41 to 52 passing tests covering unit, regression, HTTP auth, thread safety, and MCP protocol integration.
 
 ### Changed
 - Hardened `shell_runner.py` with `shell=False`, argument vector parsing, and recursive child process tree termination on timeout.

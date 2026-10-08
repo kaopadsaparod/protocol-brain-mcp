@@ -29,6 +29,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "D:\\",
         "F:\\",
     ],
+    "trusted_workspaces": [
+        ".",
+        "D:\\vault",
+    ],
     "capabilities": {
         "git_read": True,
         "git_write": False,

@@ -105,10 +105,20 @@ def test_node_eval_blocked():
 
 def test_timeout_is_bounded():
     """Commands running longer than timeout must be terminated cleanly."""
-    # Test a python command that sleeps for 5 seconds with a 1 second timeout
-    res = run_safe_command("python -m unittest tests/non_existent.py", cwd=str(PROJECT_ROOT), timeout_seconds=1)
-    # Result must return in bounded time
-    assert "exit_code" in res
+    import time
+    t0 = time.perf_counter()
+    res = run_safe_command("python tests/fixtures/sleep_process.py 5", cwd=str(PROJECT_ROOT), timeout_seconds=1)
+    elapsed = time.perf_counter() - t0
+    assert res["success"] is False
+    assert "timed out" in res["error"].lower()
+    assert elapsed < 3.0
+
+
+def test_untrusted_workspace_blocked(tmp_path):
+    """Running commands in an untrusted directory outside trusted_workspaces must be blocked."""
+    res = run_safe_command("git status", cwd=str(tmp_path))
+    assert res["success"] is False
+    assert "outside trusted workspaces" in res["error"]
 
 
 def test_timeout_cannot_exceed_config():

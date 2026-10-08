@@ -139,6 +139,7 @@ def free_port(port: int) -> Dict[str, Any]:
 
         try:
             proc = psutil.Process(pid)
+            proc_create_time = proc.create_time()
             proc_name = proc.name()
         except psutil.NoSuchProcess:
             # Process already terminated naturally
@@ -158,6 +159,14 @@ def free_port(port: int) -> Dict[str, Any]:
                 "error": f"Process '{proc_name}' (PID {pid}) is protected in the system denylist and cannot be terminated.",
                 "actionable_hint": f"Protected processes include: {list(DENYLIST_PROCESS_NAMES)[:6]}. Stop it cleanly via its own service manager.",
             }
+
+        # Guard against PID recycling / TOCTOU
+        try:
+            if not proc.is_running() or proc.create_time() != proc_create_time:
+                logger.warning(f"PID {pid} was replaced or recycled (TOCTOU prevented). Skipping.")
+                continue
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
 
         # Kill child processes first
         try:

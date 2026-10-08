@@ -14,6 +14,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
@@ -63,9 +64,46 @@ def is_path_under_roots(target: Path, roots: List[Path]) -> bool:
     return False
 
 
+def is_trusted_binary_location(exe_path: Path, cwd_path: Path) -> bool:
+    """
+    Validates that the executable resides in a legitimate system/runtime path,
+    and prevents PATH hijacking from Downloads, Temp, or unvetted directories.
+    """
+    resolved = exe_path.resolve()
+    resolved_cwd = cwd_path.resolve()
+
+    # Reject if directly inside CWD (unless inside a recognized .venv subdirectory)
+    if resolved.parent == resolved_cwd:
+        return False
+
+    parts_lower = [p.lower() for p in resolved.parts]
+    for untrusted in ("downloads", "temp", "tmp"):
+        if untrusted in parts_lower:
+            return False
+
+    # Check approved system roots and runtimes
+    approved_roots = [
+        Path(os.environ.get("SystemRoot", "C:\\Windows")).resolve(),
+        Path(os.environ.get("ProgramFiles", "C:\\Program Files")).resolve(),
+        Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")).resolve(),
+        Path(os.environ.get("ProgramData", "C:\\ProgramData")).resolve(),
+        Path(sys.base_prefix).resolve(),
+        Path(sys.prefix).resolve(),
+        Path.home() / "AppData",
+        resolved_cwd / ".venv",
+    ]
+
+    for root in approved_roots:
+        if root in resolved.parents or resolved == root:
+            return True
+
+    return False
+
+
 def resolve_executable(binary_name: str, cwd_path: Path, allowed_prefixes: List[str]) -> Optional[Path]:
     """
     Safely resolves the executable in system PATH or local .venv without executing rogue files in CWD.
+    Enforces that the resolved binary is in a trusted system/runtime location.
     """
     clean_name = binary_name.strip().strip("\"'")
 
@@ -89,9 +127,9 @@ def resolve_executable(binary_name: str, cwd_path: Path, allowed_prefixes: List[
 
     resolved_path = Path(resolved_str).resolve()
 
-    # Reject if binary resolved to a file directly inside CWD (unless it is inside .venv)
-    if resolved_path.parent == cwd_path.resolve():
-        logger.warning(f"Rejected executable resolved directly in CWD: {resolved_path}")
+    # Reject if binary is in an untrusted location (e.g. CWD, Temp, Downloads)
+    if not is_trusted_binary_location(resolved_path, cwd_path):
+        logger.warning(f"Executable '{resolved_path}' rejected: untrusted binary location.")
         return None
 
     # Check against allowed prefixes
@@ -129,7 +167,7 @@ def run_safe_command(
     - shell=False with argument vector parsing
     - Rejects shell operators (&, |, <, >, %, newline, etc.)
     - Strict allowlist and flags checking
-    - Constrained CWD within allowed roots
+    - Constrained CWD within trusted_workspaces
     - Capped timeout with recursive process tree termination
     - Truncated output to prevent context window explosion
     """
@@ -166,7 +204,7 @@ def run_safe_command(
     if not argv:
         return {"success": False, "error": "No executable specified.", "exit_code": -1}
 
-    # 3. Check CWD boundaries
+    # 3. Check CWD boundaries against trusted_workspaces
     work_dir = Path(cwd).resolve() if cwd else Path.cwd().resolve()
     if not work_dir.exists():
         return {
@@ -176,12 +214,15 @@ def run_safe_command(
             "exit_code": -1,
         }
 
-    allowed_roots = [Path(r) for r in cfg.get("allowed_roots", ["C:\\Users", "D:\\", "F:\\"])]
-    if not is_path_under_roots(work_dir, allowed_roots):
+    trusted_workspaces = [
+        Path(w).resolve() if w != "." else Path.cwd().resolve()
+        for w in cfg.get("trusted_workspaces", [".", "D:\\vault"])
+    ]
+    if not is_path_under_roots(work_dir, trusted_workspaces):
         return {
             "success": False,
-            "error": f"Working directory '{work_dir}' is outside allowed root paths.",
-            "actionable_hint": f"Run commands only within allowed roots: {[str(r) for r in allowed_roots]}",
+            "error": f"Working directory '{work_dir}' is outside trusted workspaces.",
+            "actionable_hint": f"Run commands only within trusted workspaces: {[str(r) for r in trusted_workspaces]}. Add vetted directories to config.local.json under 'trusted_workspaces'.",
             "exit_code": -1,
         }
 
@@ -191,8 +232,8 @@ def run_safe_command(
     if not exe_path:
         return {
             "success": False,
-            "error": f"Binary '{argv[0]}' is either not found in system PATH or not in the allowed shell prefixes.",
-            "actionable_hint": f"Allowed prefixes are: {allowed_prefixes}. Custom binaries placed directly in CWD are blocked for safety.",
+            "error": f"Binary '{argv[0]}' is either not found in system PATH, outside trusted locations, or not in the allowed shell prefixes.",
+            "actionable_hint": f"Allowed prefixes are: {allowed_prefixes}. Binaries placed directly in CWD, Downloads, or Temp are blocked for safety.",
             "exit_code": -1,
         }
 

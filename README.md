@@ -82,7 +82,7 @@ flowchart TD
 
 ---
 
-## 🛠️ รายการเครื่องมือทั้งหมด (22 MCP Tools)
+## 🛠️ รายการเครื่องมือทั้งหมด (24 MCP Tools)
 
 ### 1. Obsidian Second Brain & Graph
 * `read_vault_index()`: อ่าน Master Index (`00_INDEX.md`) ทันที
@@ -103,14 +103,18 @@ flowchart TD
 * `truncate_build_errors(raw_log)`: ตัด Log บิวด์/เทสต์ยาวๆ เหลือเฉพาะจุด Error และ Stack Trace สำคัญ
 
 ### 3. Windows Guard & Git Power Tools
-* `release_port(port)`: ค้นหา PID ที่ยึดพอร์ต dev (1024-65535) แล้ว Terminate Process Tree ทันที แก้ปัญหา `EADDRINUSE`
+* `release_port(port)`: ค้นหา PID ที่ยึดพอร์ต dev (1024-65535) แล้ว Terminate Process Tree ทันที มีระบบป้องกัน TOCTOU PID reuse
 * `get_active_listening_ports()`: ดูรายการพอร์ต TCP ที่กำลังถูกใช้งาน
 * `check_git_status(repo_path)`: ตรวจสถานะ Git (Branch, Staged, Unstaged, Untracked) ในรูปแบบกระชับ
 * `get_git_diff(repo_path, staged_only)`: ดูสรุป Diff สถิติการแก้ไขไฟล์ พร้อมตัวอย่าง Diff แบบจำกัดบรรทัด
-* `run_windows_command(cmd, cwd)`: รันคำสั่งปลอดภัย (`shell=False`, Argument vector, ป้องกัน Shell Injection, ปรับ `npm.cmd` อัตโนมัติ)
+* `run_windows_command(cmd, cwd)`: รันคำสั่งปลอดภัย (`shell=False`, Argument vector, ป้องกัน Shell Injection, ปรับ `npm.cmd` อัตโนมัติ, จำกัดใน `trusted_workspaces`)
 * `check_system_and_gpu()`: เช็คโหลด CPU, RAM, เนื้อที่ดิสก์ และตรวจจับ VRAM ของการ์ดจอ NVIDIA อัตโนมัติ
 * `notify_user_windows(title, msg)`: ส่งการแจ้งเตือน Windows Toast Notification
 * `convert_to_thai_pdf(input_file)`: แปลง DOCX/MD เป็น PDF ภาษาไทยด้วย LibreOffice Headless
+
+### 4. Security & Observability Inspection
+* `get_security_policy()`: ตรวจสอบความปลอดภัย ความสามารถที่เปิดใช้งาน (Capabilities), และระดับความปลอดภัยของแต่ละ Tool (5-tier taxonomy)
+* `get_system_metrics()`: ตรวจสอบตัวชี้วัดประสิทธิภาพสด (Total Calls, Latency, Token Savings, Security Block count)
 
 ---
 
@@ -195,7 +199,7 @@ python server.py --transport sse --port 8000
 โปรเจกต์มาพร้อมชุดทดสอบ `pytest` ครอบคลุมทั้ง **Happy Path, Edge Cases, และ Security Failure Cases**:
 
 ```powershell
-# รันชุดทดสอบ 22 เคส
+# รันชุดทดสอบอัตโนมัติ 52 เคส (Unit, Security Regression, HTTP Auth, Metrics, and Real MCP Integration)
 python -m pytest -v
 
 # ตรวจสอบ Code Quality และ Linting ด้วย ruff

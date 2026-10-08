@@ -12,39 +12,52 @@ from ..config import load_config
 
 
 class ToolCategory(str, Enum):
-    SAFE = "SAFE"            # Read-only, inspection, no side-effects
-    MUTATING = "MUTATING"    # Modifies vault notes, generates docs, non-destructive
-    DANGEROUS = "DANGEROUS"  # Executes OS processes, terminates ports
+    READ_ONLY = "READ_ONLY"            # Non-mutating inspection of notes, AST, git, system
+    USER_VISIBLE = "USER_VISIBLE"      # UI alerts, Obsidian GUI triggers (no data loss)
+    DATA_MUTATION = "DATA_MUTATION"    # Edits vault notes, generates docs
+    PROCESS_EXECUTION = "PROCESS_EXECUTION"  # Executes scoped OS commands
+    PROCESS_TERMINATION = "PROCESS_TERMINATION"  # Terminates listening network processes
+
+    # Backward compatibility aliases
+    SAFE = "READ_ONLY"
+    MUTATING = "DATA_MUTATION"
+    DANGEROUS = "PROCESS_EXECUTION"
 
 
 TOOL_CATEGORIES: Dict[str, ToolCategory] = {
-    # SAFE (Read-Only)
-    "read_vault_index": ToolCategory.SAFE,
-    "get_note_by_wikilink": ToolCategory.SAFE,
-    "search_vault_notes": ToolCategory.SAFE,
-    "list_projects": ToolCategory.SAFE,
-    "get_note_backlinks": ToolCategory.SAFE,
-    "get_file_outline": ToolCategory.SAFE,
-    "read_single_symbol": ToolCategory.SAFE,
-    "find_code_references": ToolCategory.SAFE,
-    "truncate_build_errors": ToolCategory.SAFE,
-    "get_active_listening_ports": ToolCategory.SAFE,
-    "check_system_and_gpu": ToolCategory.SAFE,
-    "check_git_status": ToolCategory.SAFE,
-    "get_git_diff": ToolCategory.SAFE,
+    # READ_ONLY
+    "read_vault_index": ToolCategory.READ_ONLY,
+    "get_note_by_wikilink": ToolCategory.READ_ONLY,
+    "search_vault_notes": ToolCategory.READ_ONLY,
+    "list_projects": ToolCategory.READ_ONLY,
+    "get_note_backlinks": ToolCategory.READ_ONLY,
+    "get_file_outline": ToolCategory.READ_ONLY,
+    "read_single_symbol": ToolCategory.READ_ONLY,
+    "find_code_references": ToolCategory.READ_ONLY,
+    "truncate_build_errors": ToolCategory.READ_ONLY,
+    "get_active_listening_ports": ToolCategory.READ_ONLY,
+    "check_system_and_gpu": ToolCategory.READ_ONLY,
+    "check_git_status": ToolCategory.READ_ONLY,
+    "get_git_diff": ToolCategory.READ_ONLY,
+    "get_system_metrics": ToolCategory.READ_ONLY,
+    "get_security_policy": ToolCategory.READ_ONLY,
 
-    # MUTATING (Vault / Documents)
-    "append_to_note": ToolCategory.MUTATING,
-    "update_frontmatter": ToolCategory.MUTATING,
-    "log_project_progress": ToolCategory.MUTATING,
-    "create_new_note": ToolCategory.MUTATING,
-    "open_note_in_obsidian": ToolCategory.MUTATING,
-    "notify_user_windows": ToolCategory.MUTATING,
-    "convert_to_thai_pdf": ToolCategory.MUTATING,
+    # USER_VISIBLE
+    "notify_user_windows": ToolCategory.USER_VISIBLE,
+    "open_note_in_obsidian": ToolCategory.USER_VISIBLE,
 
-    # DANGEROUS (OS & Process Control)
-    "run_windows_command": ToolCategory.DANGEROUS,
-    "release_port": ToolCategory.DANGEROUS,
+    # DATA_MUTATION
+    "append_to_note": ToolCategory.DATA_MUTATION,
+    "update_frontmatter": ToolCategory.DATA_MUTATION,
+    "log_project_progress": ToolCategory.DATA_MUTATION,
+    "create_new_note": ToolCategory.DATA_MUTATION,
+    "convert_to_thai_pdf": ToolCategory.DATA_MUTATION,
+
+    # PROCESS_EXECUTION
+    "run_windows_command": ToolCategory.PROCESS_EXECUTION,
+
+    # PROCESS_TERMINATION
+    "release_port": ToolCategory.PROCESS_TERMINATION,
 }
 
 # Capability mapping for command lines
@@ -58,7 +71,7 @@ GIT_WRITE_SUBCOMMANDS: Set[str] = {
 
 def get_tool_category(tool_name: str) -> ToolCategory:
     """Return the security category for a given tool name."""
-    return TOOL_CATEGORIES.get(tool_name, ToolCategory.DANGEROUS)
+    return TOOL_CATEGORIES.get(tool_name, ToolCategory.PROCESS_EXECUTION)
 
 
 def evaluate_command_capability(argv: List[str]) -> tuple[bool, str, str]:
@@ -107,11 +120,14 @@ def evaluate_command_capability(argv: List[str]) -> tuple[bool, str, str]:
 
     # 3. Python running tests vs general execution
     if exe_name == "python":
-        if len(argv) >= 3 and argv[1] == "-m" and argv[2] in ("pytest", "unittest", "ruff"):
+        norm_arg1 = argv[1].replace("\\", "/").lower() if len(argv) >= 2 else ""
+        if (len(argv) >= 3 and argv[1] == "-m" and argv[2] in ("pytest", "unittest", "ruff")) or (
+            norm_arg1.startswith("tests/")
+        ):
             req_cap = "run_tests"
             is_allowed = capabilities.get(req_cap, True)
             if not is_allowed:
-                return False, req_cap, f"Running tests via python -m requires '{req_cap}' capability."
+                return False, req_cap, f"Running tests via python requires '{req_cap}' capability."
             return True, req_cap, "Allowed python test execution"
 
     # 4. Package managers (npm/npx)

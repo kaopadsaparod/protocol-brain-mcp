@@ -22,6 +22,8 @@ if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
 
 from mcp.server.mcpserver import MCPServer
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from modules.code_intel import (
     filter_build_errors,
@@ -32,7 +34,7 @@ from modules.code_intel import (
 from modules.config import load_config
 from modules.docs import convert_document_to_pdf
 from modules.logger import logger
-from modules.observability import metrics
+from modules.observability import metrics, observe_tool
 from modules.security import (
     TOOL_CATEGORIES,
 )
@@ -66,6 +68,49 @@ app = MCPServer(
 )
 
 
+class BearerAuthMiddleware(BaseHTTPMiddleware):
+    """
+    Enforces HTTP Bearer token authentication for HTTP and SSE transports.
+    Rejects unauthorized requests with 401 Unauthorized.
+    """
+
+    def __init__(self, app, token: str):
+        super().__init__(app)
+        self.token = token.strip()
+
+    async def dispatch(self, request, call_next):
+        if request.method == "OPTIONS":
+            return await call_next(request)
+
+        auth_header = request.headers.get("Authorization", "").strip()
+        if not auth_header.startswith("Bearer ") or auth_header[7:].strip() != self.token:
+            return JSONResponse(
+                {
+                    "error": "Unauthorized",
+                    "message": "Missing or invalid Bearer authentication token.",
+                },
+                status_code=401,
+            )
+        return await call_next(request)
+
+
+def create_authenticated_http_app(transport: str, host: str = "127.0.0.1", auth_token: Optional[str] = None):
+    """
+    Creates and configures the Starlette application with BearerAuthMiddleware if auth_token is set.
+    """
+    if transport == "sse":
+        starlette_app = app.sse_app(host=host)
+    elif transport == "streamable-http":
+        starlette_app = app.streamable_http_app(host=host)
+    else:
+        raise ValueError(f"Unsupported HTTP transport: {transport}")
+
+    if auth_token:
+        starlette_app.add_middleware(BearerAuthMiddleware, token=auth_token)
+
+    return starlette_app
+
+
 # ==============================================================================
 # 🧠 1. Obsidian Second Brain Tools & Resources (SAFE & MUTATING)
 # ==============================================================================
@@ -90,12 +135,14 @@ def resource_system_health() -> str:
 
 
 @app.tool()
+@observe_tool("read_vault_index")
 def read_vault_index() -> str:
     """Read the master 00_INDEX.md file from the Obsidian vault immediately."""
     return get_vault_index()
 
 
 @app.tool()
+@observe_tool("get_note_by_wikilink")
 def get_note_by_wikilink(identifier: str) -> Dict[str, Any]:
     """
     Read a note by its Wikilink (e.g. '[[01_AI_Penetration_Testing]]' or note name or relative path).
@@ -105,6 +152,7 @@ def get_note_by_wikilink(identifier: str) -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("search_vault_notes")
 def search_vault_notes(query: str, folder: Optional[str] = None) -> Dict[str, Any]:
     """
     Search inside Markdown notes in the Obsidian Vault.
@@ -114,12 +162,14 @@ def search_vault_notes(query: str, folder: Optional[str] = None) -> Dict[str, An
 
 
 @app.tool()
+@observe_tool("list_projects")
 def list_projects() -> List[Dict[str, str]]:
     """List all project notes stored in the vault's 02_Projects/ folder with titles."""
     return list_all_projects()
 
 
 @app.tool()
+@observe_tool("get_note_backlinks")
 def get_note_backlinks(note_identifier: str) -> Dict[str, Any]:
     """
     Find all notes across the vault that link to the specified note (Obsidian Backlink Graph).
@@ -129,6 +179,7 @@ def get_note_backlinks(note_identifier: str) -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("append_to_note")
 def append_to_note(note_identifier: str, content: str, heading: Optional[str] = None) -> Dict[str, Any]:
     """
     Append text to an existing note safely without overwriting.
@@ -138,6 +189,7 @@ def append_to_note(note_identifier: str, content: str, heading: Optional[str] = 
 
 
 @app.tool()
+@observe_tool("update_frontmatter")
 def update_frontmatter(note_identifier: str, metadata_updates: Dict[str, Any]) -> Dict[str, Any]:
     """
     Update or add YAML frontmatter key-values in a note without altering the markdown body.
@@ -146,6 +198,7 @@ def update_frontmatter(note_identifier: str, metadata_updates: Dict[str, Any]) -
 
 
 @app.tool()
+@observe_tool("log_project_progress")
 def log_project_progress(project_identifier: str, summary: str, author: str = "AI Assistant") -> Dict[str, Any]:
     """
     Append a timestamped log entry directly to a project note in 02_Projects/.
@@ -155,12 +208,14 @@ def log_project_progress(project_identifier: str, summary: str, author: str = "A
 
 
 @app.tool()
+@observe_tool("create_new_note")
 def create_new_note(relative_path: str, title: str, content: str, tags: Optional[List[str]] = None) -> Dict[str, Any]:
     """Create a new note in the vault with standardized YAML Frontmatter. Blocks accidental overwrite."""
     return create_vault_note(relative_path, title, content, tags=tags)
 
 
 @app.tool()
+@observe_tool("open_note_in_obsidian")
 def open_note_in_obsidian(identifier: str) -> Dict[str, Any]:
     """
     Trigger the Obsidian Desktop application on the screen to open the specified note
@@ -174,6 +229,7 @@ def open_note_in_obsidian(identifier: str) -> Dict[str, Any]:
 # ==============================================================================
 
 @app.tool()
+@observe_tool("get_file_outline")
 def get_file_outline(file_path: str) -> Dict[str, Any]:
     """
     Extracts high-signal structural outline (classes, methods, functions, line numbers)
@@ -185,6 +241,7 @@ def get_file_outline(file_path: str) -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("read_single_symbol")
 def read_single_symbol(file_path: str, symbol_name: str) -> Dict[str, Any]:
     """
     Extract ONLY the specific function, method, or class definition from a file.
@@ -195,6 +252,7 @@ def read_single_symbol(file_path: str, symbol_name: str) -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("find_code_references")
 def find_code_references(
     query: str,
     root_dir: Optional[str] = None,
@@ -208,6 +266,7 @@ def find_code_references(
 
 
 @app.tool()
+@observe_tool("truncate_build_errors")
 def truncate_build_errors(raw_terminal_log: str) -> Dict[str, Any]:
     """
     Filter noisy build, compiler, or test outputs (e.g. npm run build, tsc, pytest),
@@ -221,6 +280,7 @@ def truncate_build_errors(raw_terminal_log: str) -> Dict[str, Any]:
 # ==============================================================================
 
 @app.tool()
+@observe_tool("release_port")
 def release_port(port: int) -> Dict[str, Any]:
     """
     [DANGEROUS] Terminate any process listening on the specified user-space TCP port (1024-65535).
@@ -230,12 +290,14 @@ def release_port(port: int) -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("get_active_listening_ports")
 def get_active_listening_ports() -> List[Dict[str, Any]]:
     """List all listening TCP ports and associated process names on the system."""
     return list_listening_ports()
 
 
 @app.tool()
+@observe_tool("check_system_and_gpu")
 def check_system_and_gpu() -> Dict[str, Any]:
     """
     Inspect CPU, RAM, Disk space (C, D, F), and NVIDIA GPU VRAM availability.
@@ -245,6 +307,7 @@ def check_system_and_gpu() -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("run_windows_command")
 def run_windows_command(command: str, cwd: Optional[str] = None, timeout_seconds: int = 60) -> Dict[str, Any]:
     """
     [DANGEROUS] Safely execute a scoped command on Windows.
@@ -255,6 +318,7 @@ def run_windows_command(command: str, cwd: Optional[str] = None, timeout_seconds
 
 
 @app.tool()
+@observe_tool("notify_user_windows")
 def notify_user_windows(title: str, message: str) -> Dict[str, Any]:
     """
     Send a native Windows Toast notification to alert the user when long-running tasks finish.
@@ -263,6 +327,7 @@ def notify_user_windows(title: str, message: str) -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("check_git_status")
 def check_git_status(repo_path: Optional[str] = None) -> Dict[str, Any]:
     """
     Get a concise overview of repository status: current branch, staged, unstaged, untracked files.
@@ -271,6 +336,7 @@ def check_git_status(repo_path: Optional[str] = None) -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("get_git_diff")
 def get_git_diff(repo_path: Optional[str] = None, staged_only: bool = False) -> Dict[str, Any]:
     """
     Get a token-friendly summary of Git diff changes (file stats + truncated diff preview).
@@ -283,6 +349,7 @@ def get_git_diff(repo_path: Optional[str] = None, staged_only: bool = False) -> 
 # ==============================================================================
 
 @app.tool()
+@observe_tool("convert_to_thai_pdf")
 def convert_to_thai_pdf(input_file: str, output_directory: Optional[str] = None) -> Dict[str, Any]:
     """
     Convert DOCX or Markdown to high-quality PDF using headless LibreOffice.
@@ -296,6 +363,7 @@ def convert_to_thai_pdf(input_file: str, output_directory: Optional[str] = None)
 # ==============================================================================
 
 @app.tool()
+@observe_tool("get_security_policy")
 def get_security_policy() -> Dict[str, Any]:
     """
     Inspect active server capabilities, allowed roots, and tool categories (SAFE, MUTATING, DANGEROUS).
@@ -310,6 +378,7 @@ def get_security_policy() -> Dict[str, Any]:
 
 
 @app.tool()
+@observe_tool("get_system_metrics")
 def get_system_metrics() -> Dict[str, Any]:
     """
     Inspect live runtime metrics: tool usage count, success rate, average latency, and tokens saved.
@@ -389,12 +458,15 @@ def main():
             sys.stderr.write(f"\n{err_msg}\n")
             sys.exit(1)
 
-        if args.transport == "sse":
-            logger.info(f"Starting Protocol Brain on SSE at http://{bind_host}:{bind_port}/sse")
-            app.run(transport="sse", host=bind_host, port=bind_port)
-        elif args.transport == "streamable-http":
-            logger.info(f"Starting Protocol Brain on Streamable HTTP at http://{bind_host}:{bind_port}/mcp")
-            app.run(transport="streamable-http", host=bind_host, port=bind_port)
+        import anyio
+        import uvicorn
+
+        starlette_app = create_authenticated_http_app(args.transport, host=bind_host, auth_token=auth_token)
+        endpoint = "/sse" if args.transport == "sse" else "/mcp"
+        logger.info(f"Starting Protocol Brain on {args.transport} at http://{bind_host}:{bind_port}{endpoint}")
+        uv_config = uvicorn.Config(starlette_app, host=bind_host, port=bind_port, log_level="info")
+        uv_server = uvicorn.Server(uv_config)
+        anyio.run(uv_server.serve)
 
 
 if __name__ == "__main__":
