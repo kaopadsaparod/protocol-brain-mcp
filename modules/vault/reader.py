@@ -3,15 +3,13 @@ Vault reader module for Obsidian Second Brain.
 Provides safe, headless access to notes, wikilink resolution, and backlink graphing.
 """
 
-import json
 import os
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..config import load_config
 from ..logger import logger
-
-CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config.json"
 
 
 def get_vault_path() -> Path:
@@ -21,16 +19,11 @@ def get_vault_path() -> Path:
     if env_path and os.path.exists(env_path):
         return Path(env_path).resolve()
 
-    # 2. Config file
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-                configured = cfg.get("vault_path")
-                if configured and os.path.exists(configured):
-                    return Path(configured).resolve()
-        except Exception as e:
-            logger.warning(f"Failed to read vault_path from config.json: {e}")
+    # 2. Config file (with local override support)
+    cfg = load_config()
+    configured = cfg.get("vault_path")
+    if configured and os.path.exists(configured):
+        return Path(configured).resolve()
 
     # 3. Default standard drives (vault preferred, vualt as legacy fallback)
     for candidate in [Path("D:/vault"), Path("D:/vualt"), Path.home() / "Documents" / "Vault"]:

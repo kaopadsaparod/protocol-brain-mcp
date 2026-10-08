@@ -2,7 +2,12 @@
 
 > **Universal Model Context Protocol (MCP) Server**  
 > Gateway อเนกประสงค์สำหรับ AI Agents (**Antigravity / agy**, **Claude Code**, **Aider**, **Ollama**)  
-> ผสาน **Obsidian Second Brain**, **Code Intelligence (ลด Token วัดผลจริง 91%)**, และ **Windows OS & Git Power Tools**
+> ผสาน **Obsidian Second Brain**, **Code Intelligence (ลด Token วัดผลจริง 91.0%)**, และ **Windows OS & Git Power Tools**
+
+[![CI](https://github.com/kaopadsaparod/protocol-brain-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/kaopadsaparod/protocol-brain-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python: 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![MCP: 2.3.0](https://img.shields.io/badge/mcp-2.3.0-green.svg)](https://modelcontextprotocol.io/)
 
 ---
 
@@ -17,30 +22,31 @@ flowchart TD
     end
 
     subgraph MCP["Protocol Brain MCP Server (v0.2.0)"]
-        Router["FastMCP Core (mcp==2.3.0)"]
+        Router["MCPServer (Official MCP SDK v2.3.0)"]
         Log["Safe Logger -> stderr / protocol_brain.log"]
 
         subgraph M1["1. Vault Memory & Graph"]
             T1["read_vault_index"]
             T2["get_note_by_wikilink"]
             T3["get_note_backlinks"]
-            T4["append_to_note / update_frontmatter"]
-            T5["open_note_in_obsidian"]
+            T4["list_projects"]
+            T5["append_to_note / update_frontmatter"]
+            T6["open_note_in_obsidian"]
         end
 
         subgraph M2["2. Code Intelligence & Token Saver"]
-            T6["get_file_outline (AST)"]
-            T7["read_single_symbol (ฟังก์ชันเฉพาะจุด)"]
-            T8["find_code_references (Grep with Context)"]
-            T9["truncate_build_errors"]
+            T7["get_file_outline (AST)"]
+            T8["read_single_symbol (ฟังก์ชันเฉพาะจุด)"]
+            T9["find_code_references (Grep with Context)"]
+            T10["truncate_build_errors"]
         end
 
         subgraph M3["3. Windows Guard & Git Power Tools"]
-            T10["release_port (แก้ EADDRINUSE)"]
-            T11["check_git_status / get_git_diff"]
-            T12["run_windows_command (npm.cmd + allowlist)"]
-            T13["check_system_and_gpu (Auto VRAM detection)"]
-            T14["convert_to_thai_pdf (LibreOffice)"]
+            T11["release_port (แก้ EADDRINUSE)"]
+            T12["check_git_status / get_git_diff"]
+            T13["run_windows_command (Hardened shell=False)"]
+            T14["check_system_and_gpu (Auto VRAM detection)"]
+            T15["convert_to_thai_pdf (LibreOffice)"]
         end
     end
 
@@ -57,8 +63,8 @@ flowchart TD
 
 ## 📊 ตารางวัดผลจริง: การประหยัด Token (Empirical Benchmark)
 
-> ทดสอบวัดผลจริงจาก 8 โมดูลในโปรเจกต์ เปรียบเทียบระหว่าง:
-> 1. **Full File:** โหลดโค้ดทั้งไฟล์เข้า Context (วิธีเดิม)
+> ทดสอบวัดผลจริงจาก 8 โมดูล Python ในโปรเจกต์ เปรียบเทียบระหว่าง:
+> 1. **Full File:** โหลดโค้ดทั้งไฟล์เข้า Context Window
 > 2. **File Outline:** ดึงเฉพาะแผนผังคลาส/ฟังก์ชันด้วย AST
 > 3. **Single Symbol:** ดึงเฉพาะฟังก์ชันที่ต้องการแก้ไขจริงๆ
 
@@ -79,10 +85,11 @@ flowchart TD
 ## 🛠️ รายการเครื่องมือทั้งหมด (22 MCP Tools)
 
 ### 1. Obsidian Second Brain & Graph
-* `read_vault_index()`: อ่าน Master Index ([`00_INDEX.md`](file:///D:/vault/00_INDEX.md)) ทันที
+* `read_vault_index()`: อ่าน Master Index (`00_INDEX.md`) ทันที
 * `get_note_by_wikilink(identifier)`: อ่านเนื้อหาโน้ตโดย resolve `[[WikiLinks]]` ข้ามโฟลเดอร์อัตโนมัติ (มีระบบป้องกัน Path Traversal)
 * `get_note_backlinks(identifier)`: สำรวจ Backlinks ว่ามีโน้ตใดบ้างใน Vault ที่ลิงก์มายังโน้ตนี้
 * `search_vault_notes(query, folder)`: ค้นหาคำในโน้ต Markdown
+* `list_projects()`: แสดงรายชื่อโปรเจกต์ทั้งหมดที่มีในโฟลเดอร์ `02_Projects/` พร้อมชื่อ Title
 * `append_to_note(identifier, content, heading)`: ต่อเติมเนื้อหาเข้าท้ายโน้ตหรือใต้หัวข้อที่กำหนด (ไม่เขียนทับ)
 * `update_frontmatter(identifier, metadata_updates)`: อัปเดต/เพิ่มค่าใน YAML Frontmatter โดยคงเนื้อหา Markdown เดิมไว้
 * `log_project_progress(proj, summary)`: บันทึก Log งานความคืบหน้าเข้าโฟลเดอร์โปรเจกต์
@@ -96,28 +103,44 @@ flowchart TD
 * `truncate_build_errors(raw_log)`: ตัด Log บิวด์/เทสต์ยาวๆ เหลือเฉพาะจุด Error และ Stack Trace สำคัญ
 
 ### 3. Windows Guard & Git Power Tools
-* `release_port(port)`: ค้นหา PID ที่ยึดพอร์ต (เช่น 3000, 8000) แล้ว Terminate ทันที แก้ปัญหา `EADDRINUSE`
+* `release_port(port)`: ค้นหา PID ที่ยึดพอร์ต dev (1024-65535) แล้ว Terminate Process Tree ทันที แก้ปัญหา `EADDRINUSE`
 * `get_active_listening_ports()`: ดูรายการพอร์ต TCP ที่กำลังถูกใช้งาน
 * `check_git_status(repo_path)`: ตรวจสถานะ Git (Branch, Staged, Unstaged, Untracked) ในรูปแบบกระชับ
 * `get_git_diff(repo_path, staged_only)`: ดูสรุป Diff สถิติการแก้ไขไฟล์ พร้อมตัวอย่าง Diff แบบจำกัดบรรทัด
-* `run_windows_command(cmd, cwd)`: รันคำสั่งปลอดภัย ปรับ `npm` เป็น `npm.cmd` อัตโนมัติ พร้อมเช็ค Allowlist จาก config
-* `check_system_and_gpu()`: เช็คโหลด CPU, RAM, Disk C/D/F และ VRAM ของการ์ดจอ NVIDIA อัตโนมัติ
+* `run_windows_command(cmd, cwd)`: รันคำสั่งปลอดภัย (`shell=False`, Argument vector, ป้องกัน Shell Injection, ปรับ `npm.cmd` อัตโนมัติ)
+* `check_system_and_gpu()`: เช็คโหลด CPU, RAM, เนื้อที่ดิสก์ และตรวจจับ VRAM ของการ์ดจอ NVIDIA อัตโนมัติ
 * `notify_user_windows(title, msg)`: ส่งการแจ้งเตือน Windows Toast Notification
 * `convert_to_thai_pdf(input_file)`: แปลง DOCX/MD เป็น PDF ภาษาไทยด้วย LibreOffice Headless
 
 ---
 
-## 🔒 กฎเหล็กด้านความปลอดภัยและเสถียรภาพ (Design Constraints)
+## 🔒 การรักษาความปลอดภัยเชิงลึก (Security & Hardening)
 
-1. **ห้ามพิมพ์ลง `stdout` เด็ดขาด:**
-   - ในโหมด `stdio`, สตรีม `stdout` ถูกสงวนไว้สำหรับ JSON-RPC messages ของ MCP protocol เท่านั้น
-   - ระบบใช้ `modules/logger.py` ส่ง Log ทั้งหมดไปที่ `sys.stderr` และไฟล์ `logs/protocol_brain.log`
-2. **Actionable Error Handling:**
-   - ทุก Tool ส่งคืนโครงสร้าง `{ "success": false, "error": "...", "actionable_hint": "..." }` เพื่อให้ AI สามารถคิดและแก้ไขขั้นตอนถัดไปได้ทันที ไม่พ่น Unhandled Stack Trace ดิบ
-3. **Path Traversal Protection:**
-   - มีฟังก์ชัน `is_safe_vault_path` สกัดกั้นคำสั่งที่พยายามใส่ `../../` ออกนอกโฟลเดอร์ Vault
-4. **Shell Execution Allowlist:**
-   - ควบคุมคำสั่งที่อนุญาตให้รันผ่าน `allowed_shell_prefixes` ใน `config.json`
+> [!IMPORTANT]
+> **คำแนะนำสำหรับ AI Client:** เพื่อความปลอดภัยสูงสุด แนะนำให้ตั้งค่า AI Client (เช่น `agy` หรือ Claude Code) ให้ **ถามยืนยันก่อนรันคำสั่ง (User Confirmation / Ask Permission)** สำหรับ 2 เครื่องมือนี้เสมอ:
+> - `run_windows_command`
+> - `release_port`
+> **ห้ามเปิด auto-approve สำหรับคำสั่งที่มีผลต่อระบบปฏิบัติการ**
+
+1. **Hardened Shell Runner (`shell_runner.py`):**
+   - รันด้วย `shell=False` ส่งผ่านเป็น Argument Vector เสมอ ป้องกันการพ่วงคำสั่ง cmd.exe
+   - ปฏิเสธ Metacharacters: `&`, `|`, `<`, `>`, `^`, `%`, `\n`, `\r`, `;`, `` ` ``
+   - ตรวจจับและปฏิเสธ Flag อันตรายสำหรับการรันโค้ดสด เช่น `python -c`, `node -e`, `git -c`
+   - ค้นหา Binary ตรงจาก System `PATH` เท่านั้น ไม่อนุญาตให้รัน binary ที่วางดักไว้ใน `cwd`
+   - จำกัดไดเรกทอรีทำงานให้อยู่เฉพาะใน `allowed_roots`
+   - เพดาน Timeout เข้มงวด หากเกินเวลาจะสั่งฆ่า Process Tree ลูกหลานทั้งหมดด้วย `psutil.children(recursive=True)`
+   - จำกัดความยาว Output ตาม `max_log_lines` และเพดานไบต์
+2. **Hardened Port Killer (`port_killer.py`):**
+   - จำกัดพอร์ตเฉพาะ User-space `1024 - 65535` ไม่อนุญาตให้ยุ่งกับพอร์ตระบบ (0-1023)
+   - ป้องกันไม่ให้ฆ่า Process ตัวเองและ Ancestors/Parent ทั้งหมด (เช่น ตัว client หรือ terminal host)
+   - มี **Denylist** คุ้มครองโปรเซสสำคัญ: `code.exe`, `claude.exe`, `ollama.exe`, `docker.exe`, `postgres.exe`, `explorer.exe`, `svchost.exe`
+   - ตรวจสอบความพร้อมซ้ำ (Post-verification) หลังการสั่งฆ่า เพื่อยืนยันว่าพอร์ตว่างจริง
+3. **การส่ง Log ผ่าน `stderr` เท่านั้น:**
+   - ช่องทาง `stdout` ถูกสงวนไว้ 100% สำหรับ MCP JSON-RPC Protocol สตรีมไม่มีการปนเปื้อนของ print
+4. **Actionable Error Handling:**
+   - คืนค่าโครงสร้าง `{ "success": false, "error": "...", "actionable_hint": "..." }` เพื่อให้ AI ไปต่อได้ถูกทาง
+5. **Local Config Override:**
+   - รองรับ `config.local.json` สำหรับการตั้งค่าเฉพาะเครื่องโดยไม่ถูก Commit ขึ้น Git
 
 ---
 
@@ -131,7 +154,7 @@ flowchart TD
     "protocol-brain": {
       "command": "python",
       "args": [
-        "C:\\Users\\pqx12\\Desktop\\protocol_brain\\server.py",
+        "<ABSOLUTE_PATH_TO_REPO>\\server.py",
         "--transport",
         "stdio"
       ]
@@ -139,6 +162,7 @@ flowchart TD
   }
 }
 ```
+*(แทนที่ `<ABSOLUTE_PATH_TO_REPO>` ด้วยพาธที่โคลนโปรเจกต์ เช่น `C:\\Users\\<Username>\\Desktop\\protocol_brain`)*
 
 ### 2. เชื่อมต่อกับ Claude Code / Claude Desktop
 เพิ่มใน `claude_desktop_config.json`:
@@ -148,7 +172,7 @@ flowchart TD
     "protocol-brain": {
       "command": "python",
       "args": [
-        "C:\\Users\\pqx12\\Desktop\\protocol_brain\\server.py",
+        "<ABSOLUTE_PATH_TO_REPO>\\server.py",
         "--transport",
         "stdio"
       ]
@@ -166,14 +190,20 @@ python server.py --transport sse --port 8000
 
 ---
 
-## 🧪 การทดสอบและควบคุมคุณภาพโค้ด (Tests & Quality)
+## 🧪 การทดสอบและควบคุมคุณภาพโค้ด (Tests & CI)
 
 โปรเจกต์มาพร้อมชุดทดสอบ `pytest` ครอบคลุมทั้ง **Happy Path, Edge Cases, และ Security Failure Cases**:
 
 ```powershell
-# รันชุดทดสอบ
+# รันชุดทดสอบ 22 เคส
 python -m pytest -v
 
 # ตรวจสอบ Code Quality และ Linting ด้วย ruff
 python -m ruff check .
 ```
+
+---
+
+## 📄 License
+
+MIT License - ดูรายละเอียดในไฟล์ [LICENSE](LICENSE)

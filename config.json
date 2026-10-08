@@ -1,18 +1,21 @@
 {
   "vault_path": "D:\\vault",
   "libreoffice_path": "C:\\Program Files\\LibreOffice\\program\\soffice.com",
+  "allowed_roots": [
+    "C:\\Users",
+    "D:\\",
+    "F:\\"
+  ],
   "allowed_shell_prefixes": [
     "git",
     "python",
-    "npm.cmd",
-    "npx.cmd",
-    "gh",
+    "npm",
+    "npx",
     "pytest",
     "node",
-    "ollama",
-    "docker",
     "ruff"
   ],
   "safe_command_timeout_seconds": 60,
-  "max_log_lines": 50
+  "max_log_lines": 50,
+  "max_output_bytes": 16384
 }

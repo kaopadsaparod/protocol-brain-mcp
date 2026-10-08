@@ -1,22 +1,21 @@
-import json
+"""
+Documents and Thai Typography Automation Module.
+"""
+
 import os
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-CONFIG_FILE = Path(__file__).resolve().parent.parent.parent / "config.json"
+from ..config import load_config
+from ..logger import logger
 
 
 def get_libreoffice_path() -> Path:
-    if CONFIG_FILE.exists():
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                cfg = json.load(f)
-                lo = cfg.get("libreoffice_path")
-                if lo and os.path.exists(lo):
-                    return Path(lo)
-        except Exception:
-            pass
+    cfg = load_config()
+    lo = cfg.get("libreoffice_path")
+    if lo and os.path.exists(lo):
+        return Path(lo)
 
     default_paths = [
         Path(r"C:\Program Files\LibreOffice\program\soffice.com"),
@@ -79,4 +78,5 @@ def convert_document_to_pdf(
                 "stdout": res.stdout,
             }
     except Exception as e:
+        logger.error(f"Error converting {input_file} to PDF: {e}")
         return {"success": False, "error": str(e)}
