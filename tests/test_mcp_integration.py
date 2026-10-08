@@ -42,7 +42,14 @@ async def test_mcp_stdio_protocol_roundtrip():
             assert "inspect_project" in tool_names
             assert "trace_error" in tool_names
             assert "find_impact" in tool_names
-            assert len(tool_names) == 32
+            assert "get_call_graph" in tool_names
+            assert "suggest_tests_for_change" in tool_names
+            assert "find_changed_dependencies" in tool_names
+            assert "ask_codebase" in tool_names
+            assert "inspect_docker_stack" in tool_names
+            assert "why_service_unhealthy" in tool_names
+            assert "inspect_config_usage" in tool_names
+            assert len(tool_names) == 39
 
             # 3. List Resources
             resources_result = await session.list_resources()

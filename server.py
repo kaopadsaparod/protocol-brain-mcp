@@ -33,13 +33,28 @@ from modules.code_intel import (
 )
 from modules.config import load_config
 from modules.context_engine import (
+    ask_codebase as _ask_codebase,
+)
+from modules.context_engine import (
+    find_changed_dependencies as _find_changed_dependencies,
+)
+from modules.context_engine import (
     find_impact as _find_impact,
 )
 from modules.context_engine import (
     find_relevant_tests as _find_relevant_tests,
 )
 from modules.context_engine import (
+    get_call_graph as _get_call_graph,
+)
+from modules.context_engine import (
     git_context as _git_context,
+)
+from modules.context_engine import (
+    inspect_config_usage as _inspect_config_usage,
+)
+from modules.context_engine import (
+    inspect_docker_stack as _inspect_docker_stack,
 )
 from modules.context_engine import (
     inspect_local_services as _inspect_local_services,
@@ -54,7 +69,13 @@ from modules.context_engine import (
     prepare_context as _prepare_context,
 )
 from modules.context_engine import (
+    suggest_tests_for_change as _suggest_tests_for_change,
+)
+from modules.context_engine import (
     trace_error as _trace_error,
+)
+from modules.context_engine import (
+    why_service_unhealthy as _why_service_unhealthy,
 )
 from modules.docs import convert_document_to_pdf
 from modules.logger import logger
@@ -87,8 +108,8 @@ from modules.vault import (
 # Initialize MCP Server
 app = MCPServer(
     name="protocol-brain",
-    version="0.3.0",
-    description="Universal Second Brain & Fast Context Engine for Terminal AI Agents",
+    version="0.4.0",
+    description="Universal Second Brain, Deep Code Graph & Dev Stack Intelligence Gateway for AI Agents",
 )
 
 
@@ -502,6 +523,90 @@ def inspect_local_services(workspace_root: Optional[str] = None) -> Dict[str, An
     Identifies process names, PIDs, and ports to prevent conflicts.
     """
     return _inspect_local_services(workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("get_call_graph")
+def get_call_graph(
+    symbol: str,
+    depth: int = 2,
+    direction: str = "downstream",
+    workspace_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Traverse call graph up/downstream for a symbol up to a bounded depth without LLM hallucination.
+    """
+    return _get_call_graph(symbol=symbol, depth=depth, direction=direction, workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("suggest_tests_for_change")
+def suggest_tests_for_change(
+    diff: Optional[str] = None,
+    staged_only: bool = False,
+    workspace_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Predict and recommend the minimal test subset to execute based on modified lines in git diff.
+    """
+    return _suggest_tests_for_change(diff=diff, staged_only=staged_only, workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("find_changed_dependencies")
+def find_changed_dependencies(
+    diff: Optional[str] = None,
+    staged_only: bool = False,
+    workspace_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Calculate blast radius and dependent modules directly affected by git diff changes.
+    """
+    return _find_changed_dependencies(diff=diff, staged_only=staged_only, workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("ask_codebase")
+def ask_codebase(
+    question: str,
+    budget_tokens: int = 3500,
+    workspace_root: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Answer high-level architectural or operational questions by synthesizing execution flow trees
+    and AST slices under a strict token budget.
+    """
+    return _ask_codebase(question=question, budget_tokens=budget_tokens, workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("inspect_docker_stack")
+def inspect_docker_stack(workspace_root: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Inspect Docker Compose architecture, service dependencies, port mappings, and container status
+    with strict secret masking.
+    """
+    return _inspect_docker_stack(workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("why_service_unhealthy")
+def why_service_unhealthy(service_name: str, workspace_root: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Diagnose why a Docker service exited or failed, filter logs, and provide actionable fixes
+    with 100% secret redaction.
+    """
+    return _why_service_unhealthy(service_name=service_name, workspace_root=workspace_root)
+
+
+@app.tool()
+@observe_tool("inspect_config_usage")
+def inspect_config_usage(variable_name: str, workspace_root: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Trace definition, source code references, and runtime status of an environment variable
+    with zero secret leakage.
+    """
+    return _inspect_config_usage(variable_name=variable_name, workspace_root=workspace_root)
 
 
 # ==============================================================================

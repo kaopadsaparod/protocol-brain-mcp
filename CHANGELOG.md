@@ -5,6 +5,21 @@ All notable changes to Protocol Brain will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-09
+
+### Added
+- **Deep Code Graph, Diff Intelligence & Dev Stack Intelligence (Expanded to 39 Tools):**
+  - `get_call_graph`: Interactive call graph traversal (both downstream callees and upstream callers) with bounded depth and compact ASCII tree visualization.
+  - `suggest_tests_for_change`: Diff-aware test predictor mapping modified unified diff lines to AST symbols and recommending the exact minimal test subset, skipping ~95% unaffected tests.
+  - `find_changed_dependencies`: Calculates blast radius, downstream callers, and dependent modules affected by unstaged or staged git diff changes.
+  - `ask_codebase`: Architectural Q&A synthesizer diagnosing port collisions and synthesizing end-to-end execution flow trees under a hard token budget.
+  - `inspect_docker_stack`: Parses Docker Compose topology, service dependencies, port mappings, and container states with strict secret masking.
+  - `why_service_unhealthy`: Diagnoses container healthcheck failures, tails and filters error logs, and recommends fixes without leaking credentials.
+  - `inspect_config_usage`: Traces environment variables across `.env` files, config loaders, and source code call sites with 100% secret redaction.
+- **Automated Test Suite Expansion:**
+  - Expanded test coverage from 72 to 88 passing automated tests across 17 test suites (100% pass rate).
+  - All 39 tools verified via actual JSON-RPC over stdio in `test_mcp_integration.py`.
+
 ## [0.3.0] - 2026-10-09
 
 ### Added

@@ -49,6 +49,13 @@ TOOL_CATEGORIES: Dict[str, ToolCategory] = {
     "git_context": ToolCategory.READ_ONLY,
     "inspect_runtime": ToolCategory.READ_ONLY,
     "inspect_local_services": ToolCategory.READ_ONLY,
+    "get_call_graph": ToolCategory.READ_ONLY,
+    "suggest_tests_for_change": ToolCategory.READ_ONLY,
+    "find_changed_dependencies": ToolCategory.READ_ONLY,
+    "ask_codebase": ToolCategory.READ_ONLY,
+    "inspect_docker_stack": ToolCategory.READ_ONLY,
+    "why_service_unhealthy": ToolCategory.READ_ONLY,
+    "inspect_config_usage": ToolCategory.READ_ONLY,
 
     # USER_VISIBLE
     "notify_user_windows": ToolCategory.USER_VISIBLE,

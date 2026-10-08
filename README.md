@@ -21,7 +21,7 @@ flowchart TD
         LOCAL["Local AI (Ollama / Open WebUI)"]
     end
 
-    subgraph MCP["Protocol Brain MCP Server (v0.3.0)"]
+    subgraph MCP["Protocol Brain MCP Server (v0.4.0)"]
         Router["MCPServer (Official MCP SDK v2.3.0)"]
         Log["Safe Logger -> stderr / protocol_brain.log"]
 
@@ -41,12 +41,21 @@ flowchart TD
             T10["truncate_build_errors"]
         end
 
-        subgraph M3["3. Windows Guard & Git Power Tools"]
-            T11["release_port (แก้ EADDRINUSE)"]
-            T12["check_git_status / get_git_diff"]
-            T13["run_windows_command (Hardened shell=False)"]
-            T14["check_system_and_gpu (Auto VRAM detection)"]
-            T15["convert_to_thai_pdf (LibreOffice)"]
+        subgraph M3["3. Context & Code Graph Engine"]
+            T11["prepare_context / get_call_graph"]
+            T12["suggest_tests_for_change / find_changed_dependencies"]
+            T13["ask_codebase (Architectural Reasoning)"]
+            T14["inspect_project / trace_error / find_impact"]
+            T15["inspect_docker_stack / why_service_unhealthy"]
+            T16["inspect_config_usage / inspect_runtime"]
+        end
+
+        subgraph M4["4. Windows Guard & Git Power Tools"]
+            T17["release_port (แก้ EADDRINUSE)"]
+            T18["check_git_status / get_git_diff"]
+            T19["run_windows_command (Hardened shell=False)"]
+            T20["check_system_and_gpu (Auto VRAM detection)"]
+            T21["convert_to_thai_pdf (LibreOffice)"]
         end
     end
 
@@ -57,6 +66,7 @@ flowchart TD
     Router --> M1
     Router --> M2
     Router --> M3
+    Router --> M4
 ```
 
 ---
@@ -82,7 +92,7 @@ flowchart TD
 
 ---
 
-## 🛠️ รายการเครื่องมือทั้งหมด (32 MCP Tools)
+## 🛠️ รายการเครื่องมือทั้งหมด (39 MCP Tools)
 
 ### 1. Obsidian Second Brain & Graph
 * `read_vault_index()`: อ่าน Master Index (`00_INDEX.md`) ทันที
@@ -102,7 +112,7 @@ flowchart TD
 * `find_code_references(query, root_dir, context_lines)`: Grep โค้ดแบบมี Context บรรทัดบน-ล่าง กรองโฟลเดอร์ขยะออกอัตโนมัติ
 * `truncate_build_errors(raw_log)`: ตัด Log บิวด์/เทสต์ยาวๆ เหลือเฉพาะจุด Error และ Stack Trace สำคัญ
 
-### 3. Fast Context Engine & Terminal AI Intelligence (v0.3.0 Flagship)
+### 3. Fast Context Engine & Terminal AI Intelligence (v0.3.0)
 * `prepare_context(query, budget_tokens, max_files, mode)`: สังเคราะห์ Context Packet ขนาดเล็กแบบ AST Slices ภายใต้ Hard Token Budget (ประหยัด Token เฉลี่ย 90%)
 * `inspect_project(workspace_root, max_depth)`: สร้าง Architecture Blueprint ทันที (ตรวจจับ Tech stack, Package manager, Entry points, Test runners, โครงสร้างโฟลเดอร์)
 * `trace_error(error_log, workspace_root, budget_tokens)`: ถอดรหัส Stack Trace หลายภาษา (Python, Node/TS, Go) ระบุจุดแครชในโค้ด ดึง Slice โค้ดที่พัง Callers และ Test ที่เกี่ยวข้องพร้อมคำแนะนำแก้ไข
@@ -112,7 +122,16 @@ flowchart TD
 * `inspect_runtime(workspace_root)`: ตรวจสอบสภาพแวดล้อมรันไทม์ (OS, Python/Node/Git/Docker versions, Virtualenv) พร้อม **100% Secret Redaction** ป้องกัน API Keys / Secrets รั่วไหล
 * `inspect_local_services(workspace_root)`: สแกนพอร์ต Dev Server และ Database ภายในเครื่อง (Vite, Next, FastAPI, Express, PostgreSQL, Redis) พร้อม PID
 
-### 4. Windows Guard & Git Power Tools
+### 4. Deep Code Graph, Diff Intelligence & Dev Stack (v0.4.0 Flagship)
+* `get_call_graph(symbol, depth, direction)`: ท่อง Call Graph ขึ้นบน (Callers) และลงล่าง (Callees) แสดงเป็นต้นไม้ ASCII กะทัดรัด
+* `suggest_tests_for_change(diff, staged_only)`: วิเคราะห์ Git Diff แบบ Hunk-level ทำนายชุดเทสต์ที่เกี่ยวข้องโดยตรง และตัดเทสต์ที่ไม่กระทบออกได้ถึง ~95%
+* `find_changed_dependencies(diff, staged_only)`: คำนวณ Blast Radius และผลกระทบต่อโมดูลลูกข่ายจาก Git Diff ก่อนทำการ Commit
+* `ask_codebase(question, budget_tokens)`: ตอบคำถามเชิงสถาปัตยกรรมและ Operational Q&A (สังเคราะห์ Flow การทำงานจริง และวินิจฉัยพอร์ตชน) ภายใต้ Hard Budget
+* `inspect_docker_stack(workspace_root)`: อ่านผัง Docker Compose, ตรวจสอบลำดับการพึ่งพา (Dependencies), พอร์ต และสถานะคอนเทนเนอร์สด โดย Redact ความลับทั้งหมด
+* `why_service_unhealthy(service_name)`: วินิจฉัยคอนเทนเนอร์ที่แครชหรือ Unhealthy พร้อมกรองและ Redact Logs อัตโนมัติ
+* `inspect_config_usage(variable_name)`: ตรวจสอบเส้นทางของตัวแปรสภาพแวดล้อม (Defined ใน .env ไหน, Source code ไฟล์ไหนอ่านค่าไปใช้) โดยไม่มีทางรั่วไหลค่า Secret สด
+
+### 5. Windows Guard & Git Power Tools
 * `release_port(port)`: ค้นหา PID ที่ยึดพอร์ต dev (1024-65535) แล้ว Terminate Process Tree ทันที มีระบบป้องกัน TOCTOU PID reuse
 * `get_active_listening_ports()`: ดูรายการพอร์ต TCP ที่กำลังถูกใช้งาน
 * `check_git_status(repo_path)`: ตรวจสถานะ Git (Branch, Staged, Unstaged, Untracked) ในรูปแบบกระชับ
@@ -122,7 +141,7 @@ flowchart TD
 * `notify_user_windows(title, msg)`: ส่งการแจ้งเตือน Windows Toast Notification
 * `convert_to_thai_pdf(input_file)`: แปลง DOCX/MD เป็น PDF ภาษาไทยด้วย LibreOffice Headless
 
-### 5. Security & Observability Inspection
+### 6. Security & Observability Inspection
 * `get_security_policy()`: ตรวจสอบความปลอดภัย ความสามารถที่เปิดใช้งาน (Capabilities), และระดับความปลอดภัยของแต่ละ Tool (5-tier taxonomy)
 * `get_system_metrics()`: ตรวจสอบตัวชี้วัดประสิทธิภาพสด (Total Calls, Latency, Token Savings, Security Block count)
 
