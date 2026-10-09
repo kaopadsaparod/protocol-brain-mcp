@@ -10,7 +10,7 @@ Resolution precedence (highest to lowest):
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .logger import logger
 
@@ -30,7 +30,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "F:\\",
     ],
     "trusted_workspaces": [
-        ".",
+        str(BASE_DIR),
     ],
     "capabilities": {
         "git_read": True,
@@ -126,3 +126,22 @@ def load_config(cli_overrides: Optional[Dict[str, Any]] = None) -> Dict[str, Any
         config = deep_merge(config, clean_overrides)
 
     return config
+
+
+def get_trusted_workspaces(cfg: Optional[Dict[str, Any]] = None) -> List[Path]:
+    """
+    Returns resolved Path objects for all configured trusted workspaces.
+    Relative paths (like '.') are strictly resolved relative to project root BASE_DIR.
+    """
+    if cfg is None:
+        cfg = load_config()
+    raw_workspaces = cfg.get("trusted_workspaces", [str(BASE_DIR)])
+    resolved: List[Path] = []
+    for w in raw_workspaces:
+        p = Path(w)
+        if not p.is_absolute():
+            resolved.append((BASE_DIR / p).resolve())
+        else:
+            resolved.append(p.resolve())
+    return resolved
+

@@ -1,6 +1,6 @@
 [project]
 name = "protocol-brain"
-version = "0.4.0"
+version = "0.5.1"
 description = "Universal MCP Server bridging Obsidian Second Brain, Token-saving Code Intelligence, and Windows OS Power Tools for AI Agents (agy, Claude Code, Ollama)."
 readme = "README.md"
 requires-python = ">=3.11"

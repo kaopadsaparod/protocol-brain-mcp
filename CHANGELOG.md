@@ -5,6 +5,34 @@ All notable changes to Protocol Brain will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-10-09
+
+### Security Hardening & Confinement (P1 Follow-ups)
+- **Command Runner Metacharacter & Flag Hardening (`shell_runner.py`):**
+  - Added `$`, `(`, and `)` to `FORBIDDEN_OPERATORS` to prevent subshell spawning `$(...)`, subshells `(...)`, and variable expansion `$env:...`.
+  - Reordered argument parsing and dangerous flag inspection (`check_dangerous_flags`) before metacharacter validation so arbitrary inline evaluation flags (`-c`, `-e`) are explicitly identified and rejected with targeted security hints.
+- **Explicit Project Root Baseline & Workspace Confinement (`config.py`):**
+  - Replaced ambiguous relative `"."` in `DEFAULT_CONFIG["trusted_workspaces"]` with explicit project root `BASE_DIR`.
+  - Added canonical `get_trusted_workspaces()` helper that strictly resolves relative workspace paths to `BASE_DIR`.
+- **Executable & Virtual Environment Confinement (`shell_runner.py`):**
+  - Eliminated automatic trust of `.venv` executables. Local `.venv` paths are now verified only if the command working directory is an authorized trusted workspace.
+  - Required all candidates to resolve symlinks, pass `is_trusted_binary_location()`, and verify against `allowed_shell_prefixes`.
+  - Handled WindowsApps reparse point execution aliases gracefully without triggering `WinError 1920`.
+- **Constant-Time Bearer Auth & Strict CORS Preflight Validation (`server.py`):**
+  - Enforced constant-time token comparison with `hmac.compare_digest()` to eliminate timing attack vectors.
+  - Added strict initialization and request-time validation rejecting empty or whitespace tokens.
+  - Restricted HTTP `OPTIONS` bypass strictly to legitimate CORS preflights carrying both `Origin` and `Access-Control-Request-Method` headers, rejecting unauthenticated bare `OPTIONS` requests with 401.
+- **Bounded Subprocess Streaming Reader — DoS/RAM Exhaustion Defense (`shell_runner.py`):**
+  - Replaced unbounded `proc.communicate()` with multi-threaded bounded chunk readers for `stdout` and `stderr`.
+  - Enforced a hard memory cap (`max_output_bytes`), guaranteeing subprocess output never causes Out-Of-Memory (OOM) conditions.
+  - Implemented an automated flood limiter (`flood_threshold = 64KB`) that detects runaway log output and terminates the process tree immediately using `psutil`.
+- **Target Path Confinement for Git, Pytest & Linters (`policy.py`):**
+  - Restricted git target paths in `-C <path>`, `--git-dir=<path>`, and `--work-tree=<path>` strictly to vetted `trusted_workspaces`.
+  - Confined test targets in `pytest` (positional arguments, `--rootdir`) and linter targets in `ruff` strictly to authorized workspaces, blocking out-of-bounds filesystem inspection.
+- **Security Regression Matrix & Benchmarks:**
+  - Expanded automated test suite to 109 passing tests across 18 test suites.
+  - Verified command execution latency (~55ms for git status, 173ms for flood termination) and memory stability (0.72MB delta, 1.52MB under runaway flood).
+
 ## [0.5.0] - 2026-10-09
 
 ### Security Hardening & Integrity

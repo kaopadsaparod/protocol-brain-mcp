@@ -6,9 +6,20 @@ Defines:
 """
 
 from enum import Enum
+from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from ..config import load_config
+from ..config import get_trusted_workspaces, load_config
+
+
+def is_path_under_roots(target: Path, roots: List[Path]) -> bool:
+    """Verify target path is located within one of the approved root directories."""
+    resolved_target = target.resolve()
+    for root in roots:
+        resolved_root = root.resolve()
+        if resolved_root in resolved_target.parents or resolved_target == resolved_root:
+            return True
+    return False
 
 
 class ToolCategory(str, Enum):
@@ -140,10 +151,45 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
     })
 
     exe_name = argv[0].lower().split(".")[0]
-    work_dir = cwd.resolve() if cwd else Path.cwd().resolve()
+    trusted_workspaces = get_trusted_workspaces(cfg)
+    work_dir = cwd.resolve() if cwd else (trusted_workspaces[0] if trusted_workspaces else Path.cwd().resolve())
 
     # 1. Git command evaluation
     if exe_name == "git":
+        # Check path confinement for git global directory flags (-C, --git-dir, --work-tree)
+        gi = 1
+        while gi < len(argv):
+            garg = argv[gi]
+            target_path_str: Optional[str] = None
+            flag_name: str = ""
+
+            if garg == "-C" and gi + 1 < len(argv):
+                flag_name = "-C"
+                target_path_str = argv[gi + 1]
+                gi += 2
+            elif garg.startswith("-C") and len(garg) > 2:
+                flag_name = "-C"
+                target_path_str = garg[2:]
+                gi += 1
+            elif garg in ("--git-dir", "--work-tree") and gi + 1 < len(argv):
+                flag_name = garg
+                target_path_str = argv[gi + 1]
+                gi += 2
+            elif garg.startswith("--git-dir=") or garg.startswith("--work-tree="):
+                flag_name, target_path_str = garg.split("=", 1)
+                gi += 1
+            else:
+                gi += 1
+
+            if target_path_str:
+                clean_target = target_path_str.strip("\"'")
+                try:
+                    resolved_target = (work_dir / clean_target).resolve()
+                    if not is_path_under_roots(resolved_target, trusted_workspaces):
+                        return False, "system_control", f"Git option '{flag_name}' path '{clean_target}' is outside trusted workspaces."
+                except Exception:
+                    return False, "system_control", f"Invalid path specified for git option '{flag_name}'."
+
         # Find git subcommand skipping global flags like -C <path> or --no-pager
         subcmd_idx = 1
         while subcmd_idx < len(argv):
@@ -225,16 +271,57 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
             return False, req_cap, f"Git subcommand '{subcmd}' requires '{req_cap}' capability which is disabled."
         return True, req_cap, f"Allowed git command under {req_cap}"
 
+    # Helper to check pytest target paths
+    def check_pytest_targets(args_to_check: List[str]) -> Optional[tuple[bool, str, str]]:
+        for a in args_to_check:
+            if a == "-p" or a.startswith("-p=") or a.startswith("--override-ini") or a == "-c" or a.startswith("-c="):
+                req = "system_control"
+                if not capabilities.get(req, False):
+                    return False, req, f"Pytest with custom plugin/config flag '{a}' requires '{req}' capability."
+                return True, req, "Allowed pytest with system_control"
+
+        pidx = 0
+        while pidx < len(args_to_check):
+            parg = args_to_check[pidx]
+            if parg in ("-k", "-m", "-o", "--override-ini") and pidx + 1 < len(args_to_check):
+                pidx += 2
+                continue
+            if parg.startswith("--rootdir="):
+                root_val = parg.split("=", 1)[1].strip("\"'")
+                try:
+                    resolved_root = (work_dir / root_val).resolve()
+                    if not is_path_under_roots(resolved_root, trusted_workspaces):
+                        return False, "system_control", f"Pytest --rootdir path '{root_val}' is outside trusted workspaces."
+                except Exception:
+                    return False, "system_control", "Invalid path for pytest --rootdir."
+            elif parg == "--rootdir" and pidx + 1 < len(args_to_check):
+                root_val = args_to_check[pidx + 1].strip("\"'")
+                try:
+                    resolved_root = (work_dir / root_val).resolve()
+                    if not is_path_under_roots(resolved_root, trusted_workspaces):
+                        return False, "system_control", f"Pytest --rootdir path '{root_val}' is outside trusted workspaces."
+                except Exception:
+                    return False, "system_control", "Invalid path for pytest --rootdir."
+                pidx += 2
+                continue
+            elif not parg.startswith("-"):
+                raw_target = parg.split("::")[0].strip("\"'")
+                if raw_target and (raw_target.endswith(".py") or "/" in raw_target or "\\" in raw_target or (work_dir / raw_target).exists()):
+                    try:
+                        resolved_target = (work_dir / raw_target).resolve()
+                        if not is_path_under_roots(resolved_target, trusted_workspaces):
+                            return False, "system_control", f"Pytest target path '{raw_target}' is outside trusted workspaces."
+                    except Exception:
+                        return False, "system_control", "Invalid target path for pytest."
+            pidx += 1
+        return None
+
     # 2. Test runners & Linters (pytest, ruff)
     if exe_name == "pytest":
-        # Check for dangerous arbitrary code loading flags (-p <module>, -c, --override-ini)
-        for i, a in enumerate(argv[1:]):
-            if a == "-p" or a.startswith("-p=") or a.startswith("--override-ini") or a == "-c" or a.startswith("-c="):
-                req_cap = "system_control"
-                is_allowed = capabilities.get(req_cap, False)
-                if not is_allowed:
-                    return False, req_cap, f"Pytest with custom plugin/config flag '{a}' requires '{req_cap}' capability."
-                return True, req_cap, "Allowed pytest with system_control"
+        target_check = check_pytest_targets(argv[1:])
+        if target_check is not None:
+            return target_check
+
         req_cap = "run_tests"
         is_allowed = capabilities.get(req_cap, True)
         if not is_allowed:
@@ -248,18 +335,35 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
             is_allowed = capabilities.get(req_cap, False)
             if not is_allowed:
                 return False, req_cap, "Ruff file formatting/fixing modifies source code and requires 'git_write' capability."
-            return True, req_cap, "Allowed ruff file modification"
-        req_cap = "run_tests"
-        is_allowed = capabilities.get(req_cap, True)
-        if not is_allowed:
-            return False, req_cap, f"Command '{exe_name}' requires '{req_cap}' capability which is disabled."
-        return True, req_cap, "Allowed ruff lint check"
+        else:
+            req_cap = "run_tests"
+            is_allowed = capabilities.get(req_cap, True)
+            if not is_allowed:
+                return False, req_cap, f"Command '{exe_name}' requires '{req_cap}' capability which is disabled."
+
+        # Confinement check for target files/directories
+        for a in argv[1:]:
+            if not a.startswith("-") and a.lower() not in ("check", "format", "clean", "rule", "config"):
+                clean_target = a.strip("\"'")
+                if clean_target:
+                    try:
+                        resolved_target = (work_dir / clean_target).resolve()
+                        if not is_path_under_roots(resolved_target, trusted_workspaces):
+                            return False, "system_control", f"Ruff target path '{clean_target}' is outside trusted workspaces."
+                    except Exception:
+                        return False, "system_control", "Invalid target path for ruff."
+
+        return True, req_cap, "Allowed ruff command"
 
     # 3. Python test execution with path traversal defense
     if exe_name == "python":
         if len(argv) >= 3 and argv[1] == "-m":
             module_name = argv[2].lower()
             if module_name in ("pytest", "unittest"):
+                target_check = check_pytest_targets(argv[3:])
+                if target_check is not None:
+                    return target_check
+
                 req_cap = "run_tests"
                 is_allowed = capabilities.get(req_cap, True)
                 if not is_allowed:
@@ -277,11 +381,13 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
 
         # Check if running a test script directly
         if len(argv) >= 2:
-            target_str = argv[1].strip()
+            target_str = argv[1].strip("\"'")
             tests_dir = (work_dir / "tests").resolve()
             try:
                 target_path = (work_dir / target_str).resolve()
                 if (tests_dir in target_path.parents or target_path == tests_dir) and target_path.suffix.lower() == ".py":
+                    if not is_path_under_roots(target_path, trusted_workspaces):
+                        return False, "system_control", f"Python test script '{target_str}' is outside trusted workspaces."
                     req_cap = "run_tests"
                     is_allowed = capabilities.get(req_cap, True)
                     if not is_allowed:

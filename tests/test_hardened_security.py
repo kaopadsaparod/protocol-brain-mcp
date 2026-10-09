@@ -254,3 +254,104 @@ def test_server_profiles_filtering():
 
     # Re-apply full profile
     apply_server_profile(app, "full")
+
+
+# 14. Git Target Path Confinement
+def test_git_path_confinement_blocked():
+    """Git commands with -C, --git-dir, or --work-tree pointing outside trusted workspaces must be rejected."""
+    # -C pointing outside workspace
+    is_allowed, req_cap, reason = evaluate_command_capability(
+        ["git", "-C", "C:\\Windows", "status"],
+        cwd=PROJECT_ROOT,
+    )
+    assert is_allowed is False
+    assert req_cap == "system_control"
+    assert "outside trusted workspaces" in reason
+
+    # --git-dir pointing outside workspace
+    is_allowed, req_cap, reason = evaluate_command_capability(
+        ["git", "--git-dir=C:\\Windows\\.git", "status"],
+        cwd=PROJECT_ROOT,
+    )
+    assert is_allowed is False
+    assert req_cap == "system_control"
+
+    # --work-tree pointing outside workspace
+    is_allowed, req_cap, reason = evaluate_command_capability(
+        ["git", "--work-tree=C:\\Windows", "status"],
+        cwd=PROJECT_ROOT,
+    )
+    assert is_allowed is False
+    assert req_cap == "system_control"
+
+
+# 15. Test & Linter Target Path Confinement
+def test_pytest_and_ruff_path_confinement_blocked():
+    """Pytest and Ruff runs targeting files or directories outside trusted workspaces must be rejected."""
+    # Pytest targeting outside file
+    is_allowed, req_cap, reason = evaluate_command_capability(
+        ["pytest", "C:\\Windows\\System32\\test_bad.py"],
+        cwd=PROJECT_ROOT,
+    )
+    assert is_allowed is False
+    assert req_cap == "system_control"
+    assert "outside trusted workspaces" in reason
+
+    # Pytest --rootdir outside workspace
+    is_allowed, req_cap, reason = evaluate_command_capability(
+        ["pytest", "--rootdir=C:\\Windows"],
+        cwd=PROJECT_ROOT,
+    )
+    assert is_allowed is False
+    assert req_cap == "system_control"
+
+    # Python -m pytest targeting outside file
+    is_allowed, req_cap, reason = evaluate_command_capability(
+        ["python", "-m", "pytest", "C:\\Windows\\test_x.py"],
+        cwd=PROJECT_ROOT,
+    )
+    assert is_allowed is False
+    assert req_cap == "system_control"
+
+    # Ruff targeting outside directory
+    is_allowed, req_cap, reason = evaluate_command_capability(
+        ["ruff", "check", "C:\\Windows\\System32"],
+        cwd=PROJECT_ROOT,
+    )
+    assert is_allowed is False
+    assert req_cap == "system_control"
+    assert "outside trusted workspaces" in reason
+
+
+# 16. Forbidden Operators Include Dollar and Parentheses
+def test_forbidden_operators_include_dollar_and_parentheses():
+    """FORBIDDEN_OPERATORS must include $, (, and ) to prevent subshells and variable expansion."""
+    from modules.system.shell_runner import FORBIDDEN_OPERATORS, run_safe_command
+    assert "$" in FORBIDDEN_OPERATORS
+    assert "(" in FORBIDDEN_OPERATORS
+    assert ")" in FORBIDDEN_OPERATORS
+
+    res_subshell = run_safe_command("git status $(whoami)", cwd=str(PROJECT_ROOT))
+    assert res_subshell["success"] is False
+    assert "strictly forbidden" in res_subshell["error"]
+
+    res_var = run_safe_command("git status $env:USER", cwd=str(PROJECT_ROOT))
+    assert res_var["success"] is False
+    assert "strictly forbidden" in res_var["error"]
+
+
+# 17. Subprocess Output Flood Bounded Reader (DoS / RAM Exhaustion Defense)
+def test_subprocess_output_flood_bounded_dos_defense(tmp_path):
+    """Subprocesses generating runaway output must be capped in memory and terminated without OOM."""
+    from modules.system.shell_runner import run_safe_command
+    # Run test script generating large output stream in a tight loop
+    res = run_safe_command(
+        "python tests/fixtures/flood_output.py",
+        cwd=str(PROJECT_ROOT),
+        timeout_seconds=5,
+    )
+    # Output must be truncated or marked as exceeded safety limit
+    assert "truncated" in res.get("stdout", "").lower() or "exceeded safety limit" in res.get("error", "").lower()
+    # Memory buffered in stdout must not exceed safety limit
+    assert len(res.get("stdout", "")) <= 32768
+

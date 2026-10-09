@@ -15,17 +15,19 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 import psutil
 
-from ..config import load_config
+from ..config import get_trusted_workspaces, load_config
 from ..logger import logger
 from ..security import redact_secrets
 
 # Metacharacters that could enable command chaining, redirection, or backgrounding
-FORBIDDEN_OPERATORS: Set[str] = set("&|<>^\n\r`;")
+FORBIDDEN_OPERATORS: Set[str] = set("&|<>^\n\r`;$()")
 
 # Dangerous execution flags that allow arbitrary code execution inside allowed binaries
 DANGEROUS_FLAGS: Dict[str, Set[str]] = {
@@ -70,10 +72,13 @@ def is_trusted_binary_location(exe_path: Path, cwd_path: Path) -> bool:
     Validates that the executable resides in a legitimate system/runtime path,
     and prevents PATH hijacking from Downloads, Temp, or unvetted directories.
     """
-    resolved = exe_path.resolve()
+    try:
+        resolved = exe_path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        resolved = exe_path.resolve()
     resolved_cwd = cwd_path.resolve()
 
-    # Reject if directly inside CWD (unless inside a recognized .venv subdirectory)
+    # Reject if directly inside CWD root (must not execute arbitrary binary in project root)
     if resolved.parent == resolved_cwd:
         return False
 
@@ -91,8 +96,14 @@ def is_trusted_binary_location(exe_path: Path, cwd_path: Path) -> bool:
         Path(sys.base_prefix).resolve(),
         Path(sys.prefix).resolve(),
         Path.home() / "AppData",
-        resolved_cwd / ".venv",
     ]
+
+    # Only include .venv directories if they reside inside configured trusted workspaces
+    trusted_workspaces = get_trusted_workspaces()
+    if is_path_under_roots(resolved_cwd, trusted_workspaces):
+        approved_roots.append(resolved_cwd / ".venv")
+    for tw in trusted_workspaces:
+        approved_roots.append(tw / ".venv")
 
     for root in approved_roots:
         if root in resolved.parents or resolved == root:
@@ -104,7 +115,8 @@ def is_trusted_binary_location(exe_path: Path, cwd_path: Path) -> bool:
 def resolve_executable(binary_name: str, cwd_path: Path, allowed_prefixes: List[str]) -> Optional[Path]:
     """
     Safely resolves the executable in system PATH or local .venv without executing rogue files in CWD.
-    Enforces that the resolved binary is in a trusted system/runtime location.
+    Enforces that the resolved binary is in a trusted system/runtime location, resolves symlinks,
+    and validates against allowed prefixes.
     """
     clean_name = binary_name.strip().strip("\"'")
 
@@ -114,34 +126,58 @@ def resolve_executable(binary_name: str, cwd_path: Path, allowed_prefixes: List[
     elif clean_name.lower() == "npx":
         clean_name = "npx.cmd"
 
-    # Check for project venv Python if running python
-    if clean_name.lower() in ("python", "python.exe"):
-        venv_py = cwd_path / ".venv" / "Scripts" / "python.exe"
-        if venv_py.exists():
-            return venv_py
+    resolved_path: Optional[Path] = None
 
-    # Check for pytest specifically: venv pytest.exe -> venv python.exe -> system pytest -> system python
-    if clean_name.lower() in ("pytest", "pytest.exe"):
-        venv_pytest = cwd_path / ".venv" / "Scripts" / "pytest.exe"
-        if venv_pytest.exists():
-            return venv_pytest
-        venv_py = cwd_path / ".venv" / "Scripts" / "python.exe"
-        if venv_py.exists():
-            return venv_py
+    # Check project venv ONLY if cwd_path is strictly within a trusted workspace
+    trusted_workspaces = get_trusted_workspaces()
+    is_cwd_trusted = is_path_under_roots(cwd_path, trusted_workspaces)
 
-    # Resolve strictly using system PATH
-    system_path = os.environ.get("PATH", "")
-    resolved_str = shutil.which(clean_name, path=system_path)
-    if not resolved_str and clean_name.lower() in ("pytest", "pytest.exe"):
-        # If pytest isn't an independent exe in PATH, resolve system python to execute via -m pytest
-        resolved_str = shutil.which("python", path=system_path) or sys.executable
+    if is_cwd_trusted:
+        if clean_name.lower() in ("python", "python.exe"):
+            venv_py = cwd_path / ".venv" / "Scripts" / "python.exe"
+            if venv_py.exists() and venv_py.is_file():
+                try:
+                    real_venv = venv_py.resolve()
+                    if is_path_under_roots(real_venv, [cwd_path / ".venv"]) and is_trusted_binary_location(real_venv, cwd_path):
+                        resolved_path = real_venv
+                except (OSError, RuntimeError):
+                    pass
 
-    if not resolved_str:
-        return None
+        elif clean_name.lower() in ("pytest", "pytest.exe"):
+            venv_pytest = cwd_path / ".venv" / "Scripts" / "pytest.exe"
+            if venv_pytest.exists() and venv_pytest.is_file():
+                try:
+                    real_pytest = venv_pytest.resolve()
+                    if is_path_under_roots(real_pytest, [cwd_path / ".venv"]) and is_trusted_binary_location(real_pytest, cwd_path):
+                        resolved_path = real_pytest
+                except (OSError, RuntimeError):
+                    pass
+            if not resolved_path:
+                venv_py = cwd_path / ".venv" / "Scripts" / "python.exe"
+                if venv_py.exists() and venv_py.is_file():
+                    try:
+                        real_venv = venv_py.resolve()
+                        if is_path_under_roots(real_venv, [cwd_path / ".venv"]) and is_trusted_binary_location(real_venv, cwd_path):
+                            resolved_path = real_venv
+                    except (OSError, RuntimeError):
+                        pass
 
-    resolved_path = Path(resolved_str).resolve()
+    # Resolve strictly using system PATH if not found in verified .venv
+    if not resolved_path:
+        system_path = os.environ.get("PATH", "")
+        resolved_str = shutil.which(clean_name, path=system_path)
+        if not resolved_str and clean_name.lower() in ("pytest", "pytest.exe"):
+            resolved_str = shutil.which("python", path=system_path) or sys.executable
 
-    # Reject if binary is in an untrusted location (e.g. CWD, Temp, Downloads)
+        if not resolved_str:
+            return None
+
+        try:
+            resolved_path = Path(resolved_str).resolve()
+        except (OSError, RuntimeError):
+            return None
+
+    # Reject if binary is in an untrusted location (e.g. CWD root, Temp, Downloads)
     if not is_trusted_binary_location(resolved_path, cwd_path):
         logger.warning(f"Executable '{resolved_path}' rejected: untrusted binary location.")
         return None
@@ -180,6 +216,65 @@ def check_dangerous_flags(binary_name: str, args: List[str]) -> Optional[str]:
     return None
 
 
+def _kill_process_tree(pid: int) -> None:
+    """Recursively terminates a process and all its children using psutil."""
+    try:
+        parent = psutil.Process(pid)
+        for child in parent.children(recursive=True):
+            try:
+                child.kill()
+            except (psutil.NoSuchProcess, Exception):
+                pass
+        parent.kill()
+    except (psutil.NoSuchProcess, Exception):
+        pass
+
+
+def _bounded_stream_reader(
+    stream,
+    max_store_bytes: int,
+    flood_threshold: int,
+    output_container: Dict[str, Any],
+    key: str,
+    stop_event: threading.Event,
+    flood_event: threading.Event,
+) -> None:
+    """
+    Reads from a subprocess pipe in discrete chunks up to max_store_bytes in memory.
+    If total bytes generated exceed flood_threshold, signals flood_event to terminate
+    runaway DoS processes.
+    """
+    buf = bytearray()
+    total_bytes = 0
+    chunk_size = 4096
+
+    try:
+        while not stop_event.is_set():
+            chunk = stream.read(chunk_size)
+            if not chunk:
+                break
+            chunk_len = len(chunk)
+            total_bytes += chunk_len
+
+            if len(buf) < max_store_bytes:
+                remaining_space = max_store_bytes - len(buf)
+                buf.extend(chunk[:remaining_space])
+
+            if total_bytes > flood_threshold:
+                flood_event.set()
+                break
+    except Exception:
+        pass
+    finally:
+        try:
+            stream.close()
+        except Exception:
+            pass
+        output_container[key] = bytes(buf)
+        output_container[f"{key}_truncated"] = total_bytes > max_store_bytes
+        output_container[f"{key}_total_bytes"] = total_bytes
+
+
 def run_safe_command(
     command: str,
     cwd: Optional[str] = None,
@@ -188,10 +283,11 @@ def run_safe_command(
     """
     Executes a shell command with defense-in-depth security:
     - shell=False with argument vector parsing
-    - Rejects shell operators (&, |, <, >, %, newline, etc.)
+    - Rejects shell operators (&, |, <, >, ^, %, newline, etc.)
     - Strict allowlist and flags checking
     - Constrained CWD within trusted_workspaces
     - Capped timeout with recursive process tree termination
+    - Bounded streaming reader to prevent OOM / RAM exhaustion DoS
     - Truncated output to prevent context window explosion
     """
     if not command or not command.strip():
@@ -202,18 +298,9 @@ def run_safe_command(
             "exit_code": -1,
         }
 
-    # 1. Reject shell metacharacters immediately
-    if contains_forbidden_operators(command):
-        return {
-            "success": False,
-            "error": "Shell operators or metacharacters (&, |, <, >, ^, %, newline, etc.) are strictly forbidden.",
-            "actionable_hint": "Execute a single command with discrete arguments without chaining, backgrounding, or file redirection.",
-            "exit_code": -1,
-        }
-
     cfg = load_config()
 
-    # 2. Parse argument vector and strip outer quotes
+    # 1. Parse argument vector and strip outer quotes
     try:
         raw_argv = shlex.split(command.strip(), posix=False)
         argv = [
@@ -231,8 +318,28 @@ def run_safe_command(
     if not argv:
         return {"success": False, "error": "No executable specified.", "exit_code": -1}
 
+    # 2. Check dangerous arbitrary evaluation flags (-c, -e)
+    flag_err = check_dangerous_flags(argv[0], argv[1:])
+    if flag_err:
+        return {
+            "success": False,
+            "error": flag_err,
+            "actionable_hint": "Arbitrary inline evaluation flags (-c, -e) are blocked to prevent prompt injection.",
+            "exit_code": -1,
+        }
+
+    # 3. Reject shell metacharacters
+    if contains_forbidden_operators(command):
+        return {
+            "success": False,
+            "error": "Shell operators or metacharacters (&, |, <, >, ^, %, newline, etc.) are strictly forbidden.",
+            "actionable_hint": "Execute a single command with discrete arguments without chaining, backgrounding, or file redirection.",
+            "exit_code": -1,
+        }
+
     # 3. Check CWD boundaries against trusted_workspaces
-    work_dir = Path(cwd).resolve() if cwd else Path.cwd().resolve()
+    trusted_workspaces = get_trusted_workspaces(cfg)
+    work_dir = Path(cwd).resolve() if cwd else (trusted_workspaces[0] if trusted_workspaces else Path.cwd().resolve())
     if not work_dir.exists():
         return {
             "success": False,
@@ -241,10 +348,6 @@ def run_safe_command(
             "exit_code": -1,
         }
 
-    trusted_workspaces = [
-        Path(w).resolve() if w != "." else Path.cwd().resolve()
-        for w in cfg.get("trusted_workspaces", ["."])
-    ]
     if not is_path_under_roots(work_dir, trusted_workspaces):
         return {
             "success": False,
@@ -285,15 +388,19 @@ def run_safe_command(
             "exit_code": -1,
         }
 
-    # 6. Timeout ceiling
+    # 7. Timeout ceiling
     max_timeout = int(cfg.get("safe_command_timeout_seconds", 60))
     enforced_timeout = min(max(1, timeout_seconds), max_timeout)
 
-    # 7. Execute with shell=False and process tree management
+    # 8. Execute with shell=False and bounded streaming readers
     if argv[0].lower().startswith("pytest") and exe_path.name.lower().startswith("python"):
         cmd_list = [str(exe_path), "-m", "pytest", *argv[1:]]
     else:
         cmd_list = [str(exe_path), *argv[1:]]
+
+    max_bytes = int(cfg.get("max_output_bytes", 16384))
+    # Flood ceiling: terminate process if output volume exceeds 4x max_output_bytes (min 64KB)
+    flood_threshold = max(max_bytes * 4, 65536)
 
     try:
         proc = subprocess.Popen(
@@ -304,23 +411,63 @@ def run_safe_command(
             stderr=subprocess.PIPE,
         )
 
-        try:
-            stdout_bytes, stderr_bytes = proc.communicate(timeout=enforced_timeout)
-        except subprocess.TimeoutExpired:
-            # Kill process and all recursive child processes
-            logger.warning(f"Process {proc.pid} timed out after {enforced_timeout}s. Terminating process tree...")
+        stream_results: Dict[str, Any] = {
+            "stdout": b"",
+            "stdout_truncated": False,
+            "stdout_total_bytes": 0,
+            "stderr": b"",
+            "stderr_truncated": False,
+            "stderr_total_bytes": 0,
+        }
+        stop_event = threading.Event()
+        flood_event = threading.Event()
+
+        t_stdout = threading.Thread(
+            target=_bounded_stream_reader,
+            args=(proc.stdout, max_bytes, flood_threshold, stream_results, "stdout", stop_event, flood_event),
+            daemon=True,
+        )
+        t_stderr = threading.Thread(
+            target=_bounded_stream_reader,
+            args=(proc.stderr, max_bytes, flood_threshold, stream_results, "stderr", stop_event, flood_event),
+            daemon=True,
+        )
+        t_stdout.start()
+        t_stderr.start()
+
+        timed_out = False
+        flooded = False
+        t_start = time.perf_counter()
+
+        while True:
+            ret = proc.poll()
+            if ret is not None:
+                break
+
+            if flood_event.is_set():
+                flooded = True
+                break
+
+            elapsed = time.perf_counter() - t_start
+            if elapsed > enforced_timeout:
+                timed_out = True
+                break
+
+            time.sleep(0.02)
+
+        if timed_out or flooded:
+            stop_event.set()
+            _kill_process_tree(proc.pid)
             try:
-                parent = psutil.Process(proc.pid)
-                for child in parent.children(recursive=True):
-                    try:
-                        child.kill()
-                    except (psutil.NoSuchProcess, Exception):
-                        pass
-                parent.kill()
-            except (psutil.NoSuchProcess, Exception):
+                proc.kill()
+            except Exception:
                 pass
 
-            proc.communicate()  # Clean up zombie handles
+        t_stdout.join(timeout=1.0)
+        t_stderr.join(timeout=1.0)
+
+        if timed_out:
+            logger.warning(f"Process {proc.pid} timed out after {enforced_timeout}s. Process tree terminated.")
             return {
                 "success": False,
                 "error": f"Command timed out after {enforced_timeout} seconds. Process tree terminated.",
@@ -328,7 +475,16 @@ def run_safe_command(
                 "exit_code": -1,
             }
 
-        # 8. Decode with fallback encodings
+        if flooded:
+            logger.warning(f"Process {proc.pid} exceeded flood limit ({flood_threshold} bytes). Process tree terminated.")
+            return {
+                "success": False,
+                "error": f"Command output exceeded safety limit ({flood_threshold} bytes). Process tree terminated to prevent DoS/OOM.",
+                "actionable_hint": "Filter or paginate output to produce smaller log volume.",
+                "exit_code": -1,
+            }
+
+        # 9. Decode with fallback encodings
         def decode_bytes(b: bytes) -> str:
             for enc in ["utf-8", "cp874", "cp1252", "latin-1"]:
                 try:
@@ -337,15 +493,14 @@ def run_safe_command(
                     continue
             return b.decode("utf-8", errors="replace")
 
-        stdout_str = decode_bytes(stdout_bytes)
-        stderr_str = decode_bytes(stderr_bytes)
+        stdout_str = decode_bytes(stream_results["stdout"])
+        stderr_str = decode_bytes(stream_results["stderr"])
 
-        # 9. Output truncation by max_log_lines and byte ceiling
+        # 10. Output truncation by max_log_lines and byte ceiling
         max_lines = int(cfg.get("max_log_lines", 50))
-        max_bytes = int(cfg.get("max_output_bytes", 16384))
 
-        def truncate_output(text: str) -> str:
-            if len(text) > max_bytes:
+        def truncate_output(text: str, was_truncated: bool) -> str:
+            if len(text) > max_bytes or was_truncated:
                 text = text[:max_bytes] + "\n... [Output truncated: byte limit reached]"
             lines = text.splitlines()
             if len(lines) > max_lines:
@@ -356,8 +511,8 @@ def run_safe_command(
             "success": proc.returncode == 0,
             "exit_code": proc.returncode,
             "command_executed": " ".join(cmd_list),
-            "stdout": truncate_output(redact_secrets(stdout_str)),
-            "stderr": truncate_output(redact_secrets(stderr_str)),
+            "stdout": truncate_output(redact_secrets(stdout_str), stream_results.get("stdout_truncated", False)),
+            "stderr": truncate_output(redact_secrets(stderr_str), stream_results.get("stderr_truncated", False)),
         }
     except Exception as e:
         logger.error(f"Error executing command '{cmd_list}': {e}")

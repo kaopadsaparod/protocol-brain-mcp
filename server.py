@@ -11,6 +11,7 @@ CRITICAL ARCHITECTURE RULES:
 """
 
 import argparse
+import hmac
 import json
 import sys
 from pathlib import Path
@@ -110,7 +111,7 @@ from modules.vault import (
 # Initialize MCP Server
 app = MCPServer(
     name="protocol-brain",
-    version="0.5.0",
+    version="0.5.1",
     description="Universal Second Brain, Deep Code Graph & Dev Stack Intelligence Gateway for AI Agents",
 )
 
@@ -153,18 +154,43 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
     """
     Enforces HTTP Bearer token authentication for HTTP and SSE transports.
     Rejects unauthorized requests with 401 Unauthorized.
+    Uses constant-time comparison to prevent timing attacks.
     """
 
     def __init__(self, app, token: str):
         super().__init__(app)
-        self.token = token.strip()
+        clean_token = token.strip() if token else ""
+        if not clean_token:
+            raise ValueError("BearerAuthMiddleware requires a non-empty, non-whitespace token.")
+        self.token = clean_token
 
     async def dispatch(self, request, call_next):
+        # Only allow CORS preflight OPTIONS requests if they carry Origin and Access-Control-Request-Method
         if request.method == "OPTIONS":
-            return await call_next(request)
+            has_origin = "origin" in request.headers
+            has_method = "access-control-request-method" in request.headers
+            if has_origin and has_method:
+                return await call_next(request)
+            return JSONResponse(
+                {
+                    "error": "Unauthorized",
+                    "message": "OPTIONS request without CORS preflight headers requires authentication.",
+                },
+                status_code=401,
+            )
 
         auth_header = request.headers.get("Authorization", "").strip()
-        if not auth_header.startswith("Bearer ") or auth_header[7:].strip() != self.token:
+        if not auth_header.startswith("Bearer "):
+            return JSONResponse(
+                {
+                    "error": "Unauthorized",
+                    "message": "Missing or invalid Bearer authentication token.",
+                },
+                status_code=401,
+            )
+
+        provided_token = auth_header[7:].strip()
+        if not provided_token or not hmac.compare_digest(provided_token.encode("utf-8"), self.token.encode("utf-8")):
             return JSONResponse(
                 {
                     "error": "Unauthorized",
@@ -190,8 +216,8 @@ def create_authenticated_http_app(transport: str, host: str = "127.0.0.1", auth_
     if host in ("127.0.0.1", "localhost", "::1"):
         starlette_app.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost", "::1", "testserver"])
 
-    if auth_token:
-        starlette_app.add_middleware(BearerAuthMiddleware, token=auth_token)
+    if auth_token and auth_token.strip():
+        starlette_app.add_middleware(BearerAuthMiddleware, token=auth_token.strip())
 
     return starlette_app
 
