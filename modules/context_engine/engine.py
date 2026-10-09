@@ -41,12 +41,14 @@ def prepare_context(
         }
 
     start_time = time.perf_counter()
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
-    if not root.exists() or not root.is_dir():
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
         return {
             "success": False,
-            "error": f"Invalid workspace root: {root}",
-            "actionable_hint": "Check that the workspace path exists and is accessible.",
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Check that the workspace path exists and is an approved workspace.",
         }
 
     # Check cache for fast path
@@ -96,6 +98,10 @@ def prepare_context(
         budget_tokens=budget_tokens,
         telemetry=telemetry,
     )
+
+    if "context" in result and isinstance(result["context"], str):
+        from ..security.sanitizer import redact_secrets
+        result["context"] = redact_secrets(result["context"])
 
     # Cache response for quick re-use (15 second TTL)
     memory_cache.set(cache_key, result, ttl_sec=15.0)

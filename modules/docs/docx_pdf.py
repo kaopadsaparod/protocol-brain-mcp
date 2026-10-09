@@ -35,14 +35,24 @@ def convert_document_to_pdf(
     Converts a DOCX or Markdown document to high-quality PDF using headless LibreOffice.
     Preserves Thai font rendering and vector graphics without float/drop accents.
     """
-    source_path = Path(input_file)
-    if not source_path.exists():
+    try:
+        from ..security.confine import confine
+        source_path = confine(input_file, kind="file")
+        if output_directory:
+            out_dir = confine(output_directory, kind="workspace", allow_create=True)
+        else:
+            out_dir = source_path.parent
+    except FileNotFoundError as e:
         return {
             "success": False,
-            "error": f"Input file '{input_file}' does not exist.",
+            "error": f"Input file '{input_file}' does not exist: {e}",
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid or unconfined document conversion path: {e}",
         }
 
-    out_dir = Path(output_directory) if output_directory else source_path.parent
     out_dir.mkdir(parents=True, exist_ok=True)
 
     soffice = get_libreoffice_path()

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import load_config
-from ..logger import logger
 
 SCHEMA_SQL = """
 PRAGMA journal_mode = WAL;
@@ -85,9 +84,8 @@ import hashlib
 def resolve_index_db_path(root_dir: Optional[Path] = None) -> Path:
     """
     Resolves the persistent SQLite index path.
-    1. Check config override or PROTOCOL_BRAIN_INDEX_DB
-    2. Try <workspace_root>/.protocol_brain/index.db
-    3. Fallback to %LOCALAPPDATA%/ProtocolBrain/cache/index_<hash>.db (isolated per workspace)
+    1. Check config override or PROTOCOL_BRAIN_INDEX_DB environment variable
+    2. Separate DB per workspace (named by hash of resolved root under %LOCALAPPDATA%/ProtocolBrain/)
     """
     cfg = load_config()
     configured_path = cfg.get("context_engine", {}).get("index_db_path") or os.environ.get("PROTOCOL_BRAIN_INDEX_DB")
@@ -97,18 +95,43 @@ def resolve_index_db_path(root_dir: Optional[Path] = None) -> Path:
         return p
 
     base_root = (root_dir or Path.cwd()).resolve()
-    workspace_db_dir = base_root / ".protocol_brain"
-    try:
-        workspace_db_dir.mkdir(parents=True, exist_ok=True)
-        return (workspace_db_dir / "index.db").resolve()
-    except Exception as e:
-        logger.warning(f"Could not create workspace .protocol_brain directory: {e}. Falling back to user cache.")
+    # Normalize path string for deterministic hashing across platforms
+    norm_path = str(base_root).lower() if os.name == "nt" else str(base_root)
+    path_hash = hashlib.sha256(norm_path.encode("utf-8")).hexdigest()[:16]
 
-    path_hash = hashlib.sha256(str(base_root).lower().encode()).hexdigest()[:16]
     local_app_data = os.environ.get("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
-    fallback_dir = Path(local_app_data) / "ProtocolBrain" / "cache"
-    fallback_dir.mkdir(parents=True, exist_ok=True)
-    return (fallback_dir / f"index_{path_hash}.db").resolve()
+    db_dir = Path(local_app_data) / "ProtocolBrain"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    return (db_dir / f"index_{path_hash}.db").resolve()
+
+
+class ManagedConnection:
+    """Wraps sqlite3.Connection to guarantee automatic closing on context exit."""
+
+    def __init__(self, conn: sqlite3.Connection):
+        self._conn = conn
+
+    def __enter__(self) -> sqlite3.Connection:
+        self._conn.__enter__()
+        return self._conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            return self._conn.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+
+    def close(self):
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
 
 
 class DatabaseManager:
@@ -126,13 +149,13 @@ class DatabaseManager:
             return self._explicit_path
         return resolve_index_db_path(self._root_dir)
 
-    def get_connection(self) -> sqlite3.Connection:
-        """Returns a configured SQLite connection with foreign keys and WAL mode."""
+    def get_connection(self) -> ManagedConnection:
+        """Returns a configured SQLite connection wrapped in ManagedConnection."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA foreign_keys = ON;")
-        return conn
+        return ManagedConnection(conn)
 
     def init_schema(self):
         """Ensures the schema is initialized and WAL mode is active."""

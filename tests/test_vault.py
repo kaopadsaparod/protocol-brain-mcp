@@ -55,3 +55,29 @@ def test_create_note_overwrite_protection(tmp_path):
     assert res["success"] is False
     assert "already exists" in res["error"].lower()
     assert "append" in res["actionable_hint"].lower()
+
+
+def test_append_to_hidden_or_non_md_rejected(tmp_path):
+    """Appending to .obsidian plugins or non-.md files like conftest.py must be rejected."""
+    from unittest.mock import patch
+
+    from modules.vault.writer import append_to_existing_note
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    hidden_dir = vault / ".obsidian" / "plugins" / "x"
+    hidden_dir.mkdir(parents=True)
+    bad_js = hidden_dir / "main.js"
+    bad_js.write_text("console.log(1)", encoding="utf-8")
+    conftest = vault / "conftest.py"
+    conftest.write_text("# evil test setup", encoding="utf-8")
+
+    with patch("modules.vault.writer.get_vault_path", return_value=vault):
+        res_hidden = append_to_existing_note(".obsidian/plugins/x/main.js", "evil payload")
+        assert res_hidden["success"] is False
+        assert "not found" in res_hidden["error"].lower() or "protected" in res_hidden["error"].lower()
+
+        res_conftest = append_to_existing_note("conftest.py", "import os; os.system('calc')")
+        assert res_conftest["success"] is False
+        assert "not found" in res_conftest["error"].lower() or "protected" in res_conftest["error"].lower()
+

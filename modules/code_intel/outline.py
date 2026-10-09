@@ -95,12 +95,14 @@ def get_code_outline(file_path_str: str) -> Dict[str, Any]:
     Empirically measured to reduce token consumption by an average of 91.0%
     (ranging from 75.0% to 95.9% across this project's 8 Python modules).
     """
-    target = Path(file_path_str)
-    if not target.exists() or not target.is_file():
+    try:
+        from ..security.confine import confine
+        target = confine(file_path_str, kind="file")
+    except Exception as e:
         return {
             "success": False,
-            "error": f"File '{file_path_str}' does not exist.",
-            "actionable_hint": "Verify the file path. Check for case sensitivity or typo in filename.",
+            "error": f"Invalid or unconfined file path: {e}",
+            "actionable_hint": "Provide a file path located within trusted workspaces.",
             "file": file_path_str,
             "symbols": [],
         }
@@ -253,12 +255,14 @@ def read_symbol(file_path_str: str, symbol_name: str) -> Dict[str, Any]:
     Extract ONLY the specified function, class, or method definition from a source file.
     This delivers maximum token savings by returning exactly what is requested without the rest of the file.
     """
-    target = Path(file_path_str)
-    if not target.exists() or not target.is_file():
+    try:
+        from ..security.confine import confine
+        target = confine(file_path_str, kind="file")
+    except Exception as e:
         return {
             "success": False,
-            "error": f"File '{file_path_str}' does not exist.",
-            "actionable_hint": "Check the path or use find_references to find where the symbol lives.",
+            "error": f"Invalid or unconfined file path: {e}",
+            "actionable_hint": "Check the path or provide a file within trusted workspaces.",
         }
 
     try:
@@ -275,6 +279,9 @@ def read_symbol(file_path_str: str, symbol_name: str) -> Dict[str, Any]:
             result = read_js_ts_symbol(lines, symbol_name)
 
         if result:
+            from ..security.sanitizer import redact_secrets
+            if "code" in result and isinstance(result["code"], str):
+                result["code"] = redact_secrets(result["code"])
             return {
                 "success": True,
                 "file": str(target),

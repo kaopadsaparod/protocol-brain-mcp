@@ -49,7 +49,15 @@ def inspect_runtime(workspace_root: Optional[str] = None) -> Dict[str, Any]:
     """
     Captures complete runtime environment snapshot with strict secret redaction.
     """
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
 
     # Python virtualenv detection
     venv_path = os.environ.get("VIRTUAL_ENV")
@@ -139,6 +147,17 @@ def inspect_local_services(workspace_root: Optional[str] = None) -> Dict[str, An
     Discovers active listening network services on localhost and identifies dev servers,
     backends, and database instances.
     """
+    if workspace_root:
+        try:
+            from ..security.confine import confine
+            confine(workspace_root, kind="workspace")
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Invalid workspace root: {e}",
+                "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+            }
+
     discovered_services: List[Dict[str, Any]] = []
 
     try:
@@ -170,7 +189,8 @@ def inspect_local_services(workspace_root: Optional[str] = None) -> Dict[str, An
                     try:
                         p = psutil.Process(pid)
                         proc_name = p.name()
-                        cmdline = " ".join(p.cmdline()[:4])
+                        from ..security.sanitizer import format_safe_process_summary
+                        cmdline = format_safe_process_summary(p.cmdline(), fallback_name=proc_name)
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
 

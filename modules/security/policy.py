@@ -132,7 +132,6 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
     - Path traversal in python test execution (tests/../evil.py)
     - Git read operations with file write flags (--output) or out-of-bounds reads (--no-index)
     - Git mutating subcommands/flags disguised as read (branch -D, tag -d, remote add)
-    - Untrusted npx execution (routed to package_install)
     - Ruff and pytest code injection or source file mutation
 
     Returns: (is_allowed, required_capability, reason_or_error)
@@ -209,25 +208,27 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
         subcmd = argv[subcmd_idx].lower()
         sub_args = argv[subcmd_idx + 1:]
 
-        # Diff & Log inspection: reject --output or --no-index under git_read
-        if subcmd in ("diff", "log"):
-            for a in sub_args:
-                a_lower = a.lower()
-                if a_lower == "-o" or a_lower.startswith("--output"):
-                    req_cap = "git_write"
-                    is_allowed = capabilities.get(req_cap, False)
-                    if not is_allowed:
-                        return False, req_cap, f"Git {subcmd} with file output flag '{a}' requires '{req_cap}' capability."
-                    return True, req_cap, "Allowed git command with write"
-                if a_lower == "--no-index":
-                    req_cap = "system_control"
-                    is_allowed = capabilities.get(req_cap, False)
-                    if not is_allowed:
-                        return False, req_cap, f"Git {subcmd} with '--no-index' reads outside repository and requires '{req_cap}'."
-                    return True, req_cap, "Allowed git no-index under system_control"
-            req_cap = "git_read"
+        # Output writing flags (-o, -O, --output) or out-of-repo read flags (--no-index)
+        for a in sub_args:
+            a_lower = a.lower()
+            if (
+                a in ("-o", "-O")
+                or (a.startswith("-o") and not a.startswith("--"))
+                or (a.startswith("-O") and not a.startswith("--"))
+                or a_lower == "--output"
+                or a_lower.startswith("--output=")
+            ):
+                req_cap = "git_write"
+                is_allowed = capabilities.get(req_cap, False)
+                if not is_allowed:
+                    return False, req_cap, f"Git flag '{a}' writes output to file and requires '{req_cap}' capability."
+            elif a_lower == "--no-index" or a_lower.startswith("--no-index="):
+                req_cap = "system_control"
+                is_allowed = capabilities.get(req_cap, False)
+                if not is_allowed:
+                    return False, req_cap, f"Git flag '{a}' reads outside repository and requires '{req_cap}' capability."
 
-        elif subcmd == "status" or subcmd in ("show", "rev-parse"):
+        if subcmd in ("diff", "log", "show", "status", "rev-parse"):
             req_cap = "git_read"
 
         elif subcmd == "branch":
@@ -316,6 +317,43 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
             pidx += 1
         return None
 
+    # Helper to check ruff target paths
+    def check_ruff_targets(args_to_check: List[str]) -> Optional[tuple[bool, str, str]]:
+        idx = 0
+        while idx < len(args_to_check):
+            a = args_to_check[idx]
+            if a in ("-c", "--config") and idx + 1 < len(args_to_check):
+                cfg_target = args_to_check[idx + 1].strip("\"'")
+                try:
+                    resolved_cfg = (work_dir / cfg_target).resolve()
+                    if not is_path_under_roots(resolved_cfg, trusted_workspaces):
+                        return False, "system_control", f"Ruff config path '{cfg_target}' is outside trusted workspaces."
+                except Exception:
+                    return False, "system_control", "Invalid config path for ruff."
+                idx += 2
+                continue
+            if a.startswith("--config="):
+                cfg_target = a.split("=", 1)[1].strip("\"'")
+                try:
+                    resolved_cfg = (work_dir / cfg_target).resolve()
+                    if not is_path_under_roots(resolved_cfg, trusted_workspaces):
+                        return False, "system_control", f"Ruff config path '{cfg_target}' is outside trusted workspaces."
+                except Exception:
+                    return False, "system_control", "Invalid config path for ruff."
+                idx += 1
+                continue
+            if not a.startswith("-") and a.lower() not in ("check", "format", "clean", "rule", "config"):
+                clean_target = a.strip("\"'")
+                if clean_target:
+                    try:
+                        resolved_target = (work_dir / clean_target).resolve()
+                        if not is_path_under_roots(resolved_target, trusted_workspaces):
+                            return False, "system_control", f"Ruff target path '{clean_target}' is outside trusted workspaces."
+                    except Exception:
+                        return False, "system_control", "Invalid target path for ruff."
+            idx += 1
+        return None
+
     # 2. Test runners & Linters (pytest, ruff)
     if exe_name == "pytest":
         target_check = check_pytest_targets(argv[1:])
@@ -329,6 +367,10 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
         return True, req_cap, "Allowed test command"
 
     if exe_name == "ruff":
+        target_check = check_ruff_targets(argv[1:])
+        if target_check is not None:
+            return target_check
+
         # Ruff formatting/fixing modifies files -> requires git_write
         if any(a in ("--fix", "--fix-only") for a in argv[1:]) or (len(argv) >= 2 and argv[1].lower() == "format"):
             req_cap = "git_write"
@@ -340,18 +382,6 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
             is_allowed = capabilities.get(req_cap, True)
             if not is_allowed:
                 return False, req_cap, f"Command '{exe_name}' requires '{req_cap}' capability which is disabled."
-
-        # Confinement check for target files/directories
-        for a in argv[1:]:
-            if not a.startswith("-") and a.lower() not in ("check", "format", "clean", "rule", "config"):
-                clean_target = a.strip("\"'")
-                if clean_target:
-                    try:
-                        resolved_target = (work_dir / clean_target).resolve()
-                        if not is_path_under_roots(resolved_target, trusted_workspaces):
-                            return False, "system_control", f"Ruff target path '{clean_target}' is outside trusted workspaces."
-                    except Exception:
-                        return False, "system_control", "Invalid target path for ruff."
 
         return True, req_cap, "Allowed ruff command"
 
@@ -370,22 +400,34 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
                     return False, req_cap, f"Running tests via python -m {module_name} requires '{req_cap}' capability."
                 return True, req_cap, "Allowed python test execution"
             if module_name == "ruff":
+                target_check = check_ruff_targets(argv[3:])
+                if target_check is not None:
+                    return target_check
+
                 if any(a in ("--fix", "--fix-only") for a in argv[3:]) or (len(argv) >= 4 and argv[3].lower() == "format"):
                     req_cap = "git_write"
+                    is_allowed = capabilities.get(req_cap, False)
+                    if not is_allowed:
+                        return False, req_cap, f"Running python -m ruff with modification requires '{req_cap}' capability."
                 else:
                     req_cap = "run_tests"
-                is_allowed = capabilities.get(req_cap, False)
-                if not is_allowed:
-                    return False, req_cap, f"Running python -m ruff with modification requires '{req_cap}' capability."
+                    is_allowed = capabilities.get(req_cap, True)
+                    if not is_allowed:
+                        return False, req_cap, f"Command 'python -m ruff' requires '{req_cap}' capability which is disabled."
                 return True, req_cap, "Allowed python ruff execution"
 
         # Check if running a test script directly
-        if len(argv) >= 2:
+        if len(argv) >= 2 and not argv[1].startswith("-"):
             target_str = argv[1].strip("\"'")
             tests_dir = (work_dir / "tests").resolve()
             try:
                 target_path = (work_dir / target_str).resolve()
-                if (tests_dir in target_path.parents or target_path == tests_dir) and target_path.suffix.lower() == ".py":
+                is_under_tests = tests_dir in target_path.parents and target_path.suffix.lower() == ".py"
+                parts = Path(target_str).parts
+                if "tests" in parts and not is_under_tests:
+                    return False, "system_control", f"Python test script path traversal rejected: '{target_str}' does not resolve inside tests directory."
+
+                if is_under_tests:
                     if not is_path_under_roots(target_path, trusted_workspaces):
                         return False, "system_control", f"Python test script '{target_str}' is outside trusted workspaces."
                     req_cap = "run_tests"
@@ -396,26 +438,7 @@ def evaluate_command_capability(argv: List[str], cwd: Optional[Path] = None) -> 
             except Exception:
                 pass
 
-    # 4. Package managers (npm vs npx)
-    if exe_name == "npm":
-        if len(argv) >= 2 and argv[1].lower() in ("test", "run", "lint"):
-            req_cap = "run_tests"
-        else:
-            req_cap = "package_install"
-        is_allowed = capabilities.get(req_cap, False)
-        if not is_allowed:
-            return False, req_cap, f"NPM operation '{argv[1] if len(argv) > 1 else ''}' requires '{req_cap}' capability."
-        return True, req_cap, "Allowed npm operation"
-
-    if exe_name == "npx":
-        # npx downloads/executes arbitrary packages from npm registry -> always requires package_install
-        req_cap = "package_install"
-        is_allowed = capabilities.get(req_cap, False)
-        if not is_allowed:
-            return False, req_cap, f"NPX executes arbitrary packages and requires '{req_cap}' capability which is disabled."
-        return True, req_cap, "Allowed npx operation"
-
-    # 5. Default fallback to system_control
+    # 4. Default fallback to system_control
     req_cap = "system_control"
     is_allowed = capabilities.get(req_cap, False)
     if not is_allowed:

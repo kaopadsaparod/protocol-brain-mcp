@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..logger import logger
-from .storage import DatabaseManager, db_manager
+from .storage import DatabaseManager
 
 # Directories and paths excluded from indexing
 IGNORED_DIRS: Set[str] = {
@@ -234,8 +234,8 @@ class CodebaseIndexer:
         workspace_root: Optional[Path] = None,
         storage: Optional[DatabaseManager] = None,
     ):
-        self.db = storage or db or db_manager
         self.workspace_root = (workspace_root or Path.cwd()).resolve()
+        self.db = storage or db or DatabaseManager(root_dir=self.workspace_root)
 
     def index_workspace(
         self,
@@ -348,15 +348,27 @@ class CodebaseIndexer:
 
                     files_indexed += 1
 
-            # Prune files deleted from disk
+            # Prune files deleted from disk, constrained strictly to this workspace
             deleted_paths = set(existing_records.keys()) - scanned_paths
+            pruned_count = 0
             for del_path in deleted_paths:
-                cur.execute("DELETE FROM files WHERE path = ?", (del_path,))
+                try:
+                    target_file = (workspace_root / del_path).resolve()
+                    if (workspace_root in target_file.parents) and not target_file.exists():
+                        cur.execute("DELETE FROM files WHERE path = ?", (del_path,))
+                        pruned_count += 1
+                    elif workspace_root not in target_file.parents:
+                        # Outside this workspace root; prune foreign record
+                        cur.execute("DELETE FROM files WHERE path = ?", (del_path,))
+                        pruned_count += 1
+                except Exception:
+                    cur.execute("DELETE FROM files WHERE path = ?", (del_path,))
+                    pruned_count += 1
 
             conn.commit()
 
         elapsed_ms = round((time.perf_counter() - start_time) * 1000, 2)
-        logger.info(f"Indexed workspace: {files_indexed} changed, {cache_hits} hits, {len(deleted_paths)} pruned in {elapsed_ms}ms")
+        logger.info(f"Indexed workspace: {files_indexed} changed, {cache_hits} hits, {pruned_count} pruned in {elapsed_ms}ms")
 
         return {
             "success": True,

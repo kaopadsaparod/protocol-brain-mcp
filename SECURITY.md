@@ -13,14 +13,14 @@ Protocol Brain bridges AI language models to local filesystem resources and oper
                               MCP Protocol Boundary
                                         │
                 ┌────────────────────────▼────────────────────────┐
-                │              Protocol Brain v0.2.1              │
+                │              Protocol Brain v0.5.1              │
                 │                                                 │
                 │  [HTTP/SSE Bearer Auth]  [Observability Wrap]   │
                 │  [Capability Policy]     [Sandbox Boundary]     │
                 └───────────────┬─────────────────┬───────────────┘
                                 │                 │
                  Trusted Reads  │                 │ Privileged Actions
-            (READ_ROOTS: C, D, F)│                 │ (EXEC_ROOTS: trusted only)
+            (READ_ROOTS: Vault) │                 │ (EXEC_ROOTS: trusted_workspaces)
                                 ▼                 ▼
                         ┌───────────────┐ ┌───────────────┐
                         │ Obsidian Vault│ │ Hardened OS / │
@@ -29,7 +29,7 @@ Protocol Brain bridges AI language models to local filesystem resources and oper
 ```
 
 1. **Client Confirmation is NOT a Hard Boundary:** Client-side confirmation prompts can be manipulated by social engineering or automated agents. Therefore, the MCP server itself enforces strict, unbypassable execution policies.
-2. **Capability-Based Execution:** OS commands are scoped by granular capabilities (`git_read`, `git_write`, `run_tests`, `package_install`, `system_control`).
+2. **Capability-Based Execution:** OS commands are scoped by granular capabilities (`git_read`, `git_write`, `run_tests`, `package_install`, `system_control`, `process_termination`).
 3. **No Shell Interpreter:** Commands are parsed into discrete argument vectors and executed with `shell=False`.
 
 ---
@@ -38,15 +38,17 @@ Protocol Brain bridges AI language models to local filesystem resources and oper
 
 ### 1. OS Command Execution (`shell_runner.py`)
 * **`shell=False` Strictly Enforced:** Commands never touch `cmd.exe` or `powershell.exe` for interpretation, blocking operator injection completely.
-* **Metacharacter Rejection:** Any presence of `&`, `|`, `<`, `>`, `^`, `%`, `\n`, `\r`, `;`, or `` ` `` immediately rejects execution with an actionable error.
-* **Dangerous Flag Inspection:** Flags that execute inline code (`python -c`, `node -e`, `node --eval`, `node -p`, `git -c`) are rejected before execution.
+* **Metacharacter Rejection:** Any presence of `&`, `|`, `<`, `>`, `^`, `$`, `(`, `)`, `\n`, `\r`, `;`, or `` ` `` immediately rejects execution with an actionable error. Shell variable expansion and subshells (`$()`) are strictly blocked.
+* **Windows Batch Script Restriction (`.bat`, `.cmd`, `npm`, `npx`):** On Windows, `CreateProcessW` invokes `cmd.exe /c` for batch files even when `shell=False`, which risks argument injection. Protocol Brain blocks `.bat`, `.cmd`, and wrappers (`npm`, `npx`) by default, directing users and agents to invoke native binaries or Python/Node scripts directly.
+* **Dangerous Flag Inspection:** Flags that execute inline code (`python -c`, `node -e`, `node --eval`, `node -p`, `git -c`, `pytest -p`) are rejected or routed to `system_control`.
 * **System PATH Resolution & Hijacking Defense:** Executables must resolve to genuine system binaries via approved system roots. Binaries placed in unvetted directories (`Downloads`, `Temp`, or directly inside `cwd`) are blocked.
-* **Scoped Execution Workspaces (`trusted_workspaces`):** Working directories for command execution must reside within vetted workspaces (repository root and `D:\vault`), preventing malicious `conftest.py` execution from untrusted clones.
+* **Scoped Execution Workspaces & Target Confinement (`trusted_workspaces`):** Working directories and target arguments (including `git -C`, `pytest` files, `ruff`, and `python -m ruff` target paths) must reside within vetted workspaces. Path traversal (`..`) outside trusted roots is strictly rejected under `system_control`.
+* **Bounded Output & DoS / OOM Protection:** Subprocess output is monitored via a dual-threaded streaming reader. If output exceeds the safety ceiling (64 KB), the process tree is terminated immediately to prevent memory exhaustion. Stored output is bounded at 16 KB with truncation indicators.
 * **Process Tree Termination on Timeout:** When a command exceeds `safe_command_timeout_seconds`, all descendant child processes are recursively terminated using `psutil`.
-* **Bounded Output:** Output is capped by `max_log_lines` and `max_output_bytes` to protect model context windows.
 
 ### 2. Process & Port Guard (`port_killer.py`)
 * **User-Space Only:** Ports `< 1024` (system/privileged ports) are rejected.
+* **Capability Control:** Port termination requires explicit `process_termination` capability (disabled by default).
 * **Self & Ancestor Protection:** The server will never terminate its own PID or any parent/ancestor process (e.g. IDE client, terminal host).
 * **Protected Process Denylist:** Critical services (`code.exe`, `claude.exe`, `ollama.exe`, `docker.exe`, `postgres.exe`, `explorer.exe`, `svchost.exe`) cannot be killed.
 * **TOCTOU & PID Recycling Guard:** Captures process `create_time` and re-verifies before termination to prevent killing unrelated recycled PIDs.
@@ -54,12 +56,14 @@ Protocol Brain bridges AI language models to local filesystem resources and oper
 
 ### 3. Filesystem & Vault Access (`reader.py`, `writer.py`)
 * **Path Traversal Defense:** All note operations verify that the resolved canonical path remains strictly within the vault root.
+* **Extension & Directory Enforcement:** Only `.md` markdown files can be read or created. Access to hidden directories (`.obsidian`, `.git`, `.vscode`) is strictly blocked to protect plugins and configuration.
 * **Overwrite Protection:** `create_new_note` will refuse to overwrite existing files. Mutations must use explicit `append_to_note` or `update_frontmatter`.
 
 ### 4. Transport Security & Authentication
-* **Request-Time Bearer Auth:** Starlette ASGI `BearerAuthMiddleware` enforces `Authorization: Bearer <token>` on HTTP and SSE endpoints, rejecting unauthorized requests with `401 Unauthorized`.
+* **Request-Time Bearer Auth:** Starlette ASGI `BearerAuthMiddleware` enforces `Authorization: Bearer <token>` on HTTP and SSE endpoints, rejecting unauthorized or empty token requests with `401 Unauthorized`.
 * **Loopback Safe Default:** SSE and Streamable HTTP transports bind to `127.0.0.1` by default.
 * **Non-Loopback Blocking:** Binding to `0.0.0.0` or external network interfaces requires an explicit authentication token (`--auth-token` or `PROTOCOL_BRAIN_AUTH_TOKEN`).
+* **DNS Rebinding Defense:** `TrustedHostMiddleware` restricts incoming Host headers when operating on loopback.
 
 ---
 

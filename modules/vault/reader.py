@@ -25,8 +25,8 @@ def get_vault_path() -> Path:
     if configured and os.path.exists(configured):
         return Path(configured).resolve()
 
-    # 3. Default standard drives (vault preferred, vualt as legacy fallback)
-    for candidate in [Path("D:/vault"), Path("D:/vualt"), Path.home() / "Documents" / "Vault"]:
+    # 3. Default standard drives (vault preferred)
+    for candidate in [Path("D:/vault"), Path.home() / "Documents" / "Vault"]:
         if candidate.exists():
             return candidate.resolve()
 
@@ -37,6 +37,7 @@ def is_safe_vault_path(target: Path, vault: Path) -> bool:
     """
     Guards against Path Traversal vulnerabilities and hidden/system directory access.
     Enforces that target resides within vault root and contains no hidden path segments.
+    Strictly enforces that target must have the .md extension.
     """
     try:
         resolved_target = target.resolve()
@@ -49,8 +50,8 @@ def is_safe_vault_path(target: Path, vault: Path) -> bool:
         if any(part.startswith(".") for part in rel_parts):
             return False
 
-        # Reject non-markdown files inside vault if target has an extension
-        if resolved_target.suffix and resolved_target.suffix.lower() != ".md":
+        # Reject non-markdown files inside vault
+        if resolved_target.suffix.lower() != ".md":
             return False
 
         return True
@@ -64,6 +65,9 @@ def resolve_wikilink_path(vault_path: Path, note_identifier: str) -> Optional[Pa
     to a concrete markdown (.md) file path in the vault.
     Strictly enforces .md extension and rejects hidden paths (.obsidian, .git).
     """
+    if not note_identifier or not note_identifier.strip():
+        return None
+
     clean_name = note_identifier.strip()
     if clean_name.startswith("[[") and clean_name.endswith("]]"):
         clean_name = clean_name[2:-2]
@@ -72,8 +76,14 @@ def resolve_wikilink_path(vault_path: Path, note_identifier: str) -> Optional[Pa
     if "|" in clean_name:
         clean_name = clean_name.split("|")[0].strip()
 
-    # Reject attempt to target hidden directory directly
-    if any(segment.startswith(".") for segment in Path(clean_name).parts):
+    path_obj = Path(clean_name)
+
+    # Reject attempt to target hidden directory directly or dot-prefixed parts
+    if any(segment.startswith(".") for segment in path_obj.parts):
+        return None
+
+    # If an extension is explicitly specified and it is not .md, reject immediately!
+    if path_obj.suffix and path_obj.suffix.lower() != ".md":
         return None
 
     # Direct relative path check (must end with .md)
@@ -81,14 +91,14 @@ def resolve_wikilink_path(vault_path: Path, note_identifier: str) -> Optional[Pa
     if candidate.suffix.lower() == ".md" and is_safe_vault_path(candidate, vault_path) and candidate.exists() and candidate.is_file():
         return candidate
 
-    if not clean_name.endswith(".md"):
+    if not clean_name.lower().endswith(".md"):
         candidate_md = (vault_path / f"{clean_name}.md").resolve()
         if is_safe_vault_path(candidate_md, vault_path) and candidate_md.exists() and candidate_md.is_file():
             return candidate_md
 
     # Recursive search by stem/filename
-    target_filename = Path(clean_name).name
-    if not target_filename.endswith(".md"):
+    target_filename = path_obj.name
+    if not target_filename.lower().endswith(".md"):
         target_filename += ".md"
 
     target_lower = target_filename.lower()

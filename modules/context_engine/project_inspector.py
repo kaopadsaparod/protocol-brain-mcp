@@ -5,7 +5,6 @@ Zero LLM, purely deterministic file and AST analysis.
 """
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -204,26 +203,17 @@ def generate_directory_tree(root: Path, max_depth: int = 2) -> str:
 
 def get_git_quick_summary(root: Path) -> Dict[str, Any]:
     """Gets branch and dirty status without blocking."""
+    from ..system.git_tools import run_git
+
     try:
-        branch = subprocess.check_output(
-            ["git", "branch", "--show-current"],
-            cwd=str(root),
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-            text=True,
-        ).strip()
+        b_res = run_git(["branch", "--show-current"], cwd=root, timeout=2.0)
+        branch = b_res.stdout.strip()
     except Exception:
         branch = "unknown"
 
     try:
-        status_out = subprocess.check_output(
-            ["git", "status", "--porcelain"],
-            cwd=str(root),
-            stderr=subprocess.DEVNULL,
-            timeout=2,
-            text=True,
-        )
-        dirty_count = len([line for line in status_out.splitlines() if line.strip()])
+        s_res = run_git(["status", "--porcelain"], cwd=root, timeout=2.0)
+        dirty_count = len([line for line in s_res.stdout.splitlines() if line.strip()])
     except Exception:
         dirty_count = 0
 
@@ -243,12 +233,14 @@ def inspect_project(
     Returns:
         Structured blueprint dictionary with markdown preview and telemetry.
     """
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
-    if not root.exists() or not root.is_dir():
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
         return {
             "success": False,
-            "error": f"Invalid workspace root: {root}",
-            "actionable_hint": "Provide a valid existing directory path.",
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Provide a valid existing directory path within trusted workspaces.",
         }
 
     tech = detect_languages_and_tools(root)
@@ -260,12 +252,12 @@ def inspect_project(
     index_stats = {"indexed_files": 0, "indexed_symbols": 0}
     try:
         storage = IndexStorage(root_dir=root)
-        conn = storage.get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM files")
-        index_stats["indexed_files"] = cur.fetchone()[0]
-        cur.execute("SELECT COUNT(*) FROM symbols")
-        index_stats["indexed_symbols"] = cur.fetchone()[0]
+        with storage.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM files")
+            index_stats["indexed_files"] = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM symbols")
+            index_stats["indexed_symbols"] = cur.fetchone()[0]
     except Exception as e:
         logger.debug(f"Index stats lookup skipped: {e}")
 

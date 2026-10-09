@@ -29,7 +29,15 @@ def inspect_docker_stack(workspace_root: Optional[str] = None) -> Dict[str, Any]
     Inspects Docker Compose stack architecture, dependencies, ports, and container states.
     All environment variable values are strictly masked to prevent secret leakage.
     """
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
     compose_path = find_compose_file(root)
 
     if not compose_path:
@@ -144,7 +152,15 @@ def why_service_unhealthy(
             "actionable_hint": "Specify the service name from your docker-compose.yml (e.g. 'api' or 'web').",
         }
 
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
     compose_path = find_compose_file(root)
     clean_name = service_name.strip()
 
@@ -158,18 +174,15 @@ def why_service_unhealthy(
                 timeout=4,
                 text=True,
             )
+            from ..security.sanitizer import redact_secrets
             for raw_line in logs_out.splitlines():
-                # Redact potential tokens or passwords in logs
-                masked_line = raw_line
-                for kw in ["password=", "secret=", "token=", "key="]:
-                    if kw in masked_line.lower():
-                        masked_line = "[LOG REDACTED FOR SECURITY]"
-                        break
-                recent_logs.append(masked_line)
+                recent_logs.append(redact_secrets(raw_line))
         except subprocess.CalledProcessError as e:
-            recent_logs.append(f"Could not read logs: {e.output}")
+            from ..security.sanitizer import redact_secrets
+            recent_logs.append(redact_secrets(f"Could not read logs: {e.output}"))
         except Exception as e:
-            recent_logs.append(f"Docker inspection error: {e}")
+            from ..security.sanitizer import redact_secrets
+            recent_logs.append(redact_secrets(f"Docker inspection error: {e}"))
     else:
         recent_logs.append("Docker CLI not available on current host PATH.")
 

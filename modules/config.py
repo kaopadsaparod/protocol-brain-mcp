@@ -43,8 +43,6 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "allowed_shell_prefixes": [
         "git",
         "python",
-        "npm",
-        "npx",
         "pytest",
         "node",
         "ruff",

@@ -42,7 +42,8 @@ def answer_port_question(question: str) -> Optional[Dict[str, Any]]:
                         try:
                             p = psutil.Process(pid)
                             proc_name = p.name()
-                            cmd_line = redact_secrets(" ".join(p.cmdline()[:4]))
+                            from ..security.sanitizer import format_safe_process_summary
+                            cmd_line = format_safe_process_summary(p.cmdline(), fallback_name=proc_name)
                             if p.parent():
                                 parent_name = p.parent().name()
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
@@ -66,7 +67,7 @@ def answer_port_question(question: str) -> Optional[Dict[str, Any]]:
         md_lines.append(
             f"- **Port {s['port']}** is held by PID `{s['pid']}` (`{s['process']}`)\n"
             f"  - Parent process: `{s['parent']}`\n"
-            f"  - Command line: `{s['cmd']}`\n"
+            f"  - Command: `{s['cmd']}`\n"
             f"  - Solution: Call `release_port(port={s['port']})` to terminate."
         )
 
@@ -93,6 +94,16 @@ def ask_codebase(
             "actionable_hint": "Ask an architectural or operational question (e.g. 'how does authentication work?' or 'why is port 3000 busy?').",
         }
 
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
+
     # 1. Check for runtime port questions
     port_ans = answer_port_question(question)
     if port_ans:
@@ -106,35 +117,34 @@ def ask_codebase(
         }
 
     # 2. Architectural Flow Extraction
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
     storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
     indexer.index_workspace(max_depth=3)
 
     tokens = tokenize_query(question)
-    conn = storage.get_connection()
-    cur = conn.cursor()
+    matched_symbols: List[Dict[str, Any]] = []
 
     # Find primary matching symbols
-    matched_symbols: List[Dict[str, Any]] = []
-    for tok in list(tokens)[:4]:
-        cur.execute("""
-            SELECT s.name, s.type, s.line_start, s.line_end, f.path
-            FROM symbols s
-            JOIN files f ON s.file_id = f.id
-            WHERE s.name LIKE ? OR s.container LIKE ?
-            ORDER BY (s.line_end - s.line_start) ASC
-            LIMIT 5
-        """, (f"%{tok}%", f"%{tok}%"))
-        for s_name, s_type, ls, le, fp in cur.fetchall():
-            if not any(ms["name"] == s_name for ms in matched_symbols):
-                matched_symbols.append({
-                    "name": s_name,
-                    "type": s_type,
-                    "line_start": ls,
-                    "line_end": le,
-                    "file_path": fp,
-                })
+    with storage.get_connection() as conn:
+        cur = conn.cursor()
+        for tok in list(tokens)[:4]:
+            cur.execute("""
+                SELECT s.name, s.type, s.line_start, s.line_end, f.path
+                FROM symbols s
+                JOIN files f ON s.file_id = f.id
+                WHERE s.name LIKE ? OR s.container LIKE ?
+                ORDER BY (s.line_end - s.line_start) ASC
+                LIMIT 5
+            """, (f"%{tok}%", f"%{tok}%"))
+            for s_name, s_type, ls, le, fp in cur.fetchall():
+                if not any(ms["name"] == s_name for ms in matched_symbols):
+                    matched_symbols.append({
+                        "name": s_name,
+                        "type": s_type,
+                        "line_start": ls,
+                        "line_end": le,
+                        "file_path": fp,
+                    })
 
     flow_steps: List[Dict[str, Any]] = []
     budget_limit = max(300, budget_tokens - 200)
@@ -176,7 +186,7 @@ def ask_codebase(
     else:
         md_sections.append("*(No specific architectural symbols matched the query tokens in the indexed codebase)*")
 
-    answer_text = "\n".join(md_sections)
+    answer_text = redact_secrets("\n".join(md_sections))
     final_tokens = estimate_tokens(answer_text)
 
     return {

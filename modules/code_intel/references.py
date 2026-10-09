@@ -32,12 +32,15 @@ def find_references(
     """
     Search for occurrences of a symbol or string across files with preceding and succeeding context lines.
     """
-    search_path = Path(root_dir) if root_dir else Path.cwd()
-    if not search_path.exists():
+    context_lines = min(max(0, int(context_lines)), 10)
+    try:
+        from ..security.confine import confine
+        search_path = confine(root_dir or Path.cwd(), kind="workspace")
+    except Exception as e:
         return {
             "success": False,
-            "error": f"Search root '{root_dir}' does not exist.",
-            "actionable_hint": "Provide a valid absolute or relative directory path.",
+            "error": f"Invalid or unconfined search root: {e}",
+            "actionable_hint": "Specify a valid directory within trusted workspaces.",
             "results": [],
         }
 
@@ -59,6 +62,13 @@ def find_references(
                 continue
 
             try:
+                # Skip files larger than 1 MB
+                if file_path.stat().st_size > 1024 * 1024:
+                    continue
+            except OSError:
+                continue
+
+            try:
                 with open(file_path, "r", encoding="utf-8", errors="replace") as f:
                     lines = f.readlines()
 
@@ -71,10 +81,11 @@ def find_references(
                             f"{i + 1:4d} | {lines[i].rstrip()}"
                             for i in range(start_idx, end_idx)
                         ]
+                        from ..security.sanitizer import redact_secrets
                         file_hits.append({
                             "match_line": idx + 1,
-                            "match_text": line.strip()[:150],
-                            "context": "\n".join(context_snippet),
+                            "match_text": redact_secrets(line.strip()[:150]),
+                            "context": redact_secrets("\n".join(context_snippet)),
                         })
 
                         if len(file_hits) >= 3:

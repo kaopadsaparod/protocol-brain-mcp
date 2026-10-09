@@ -27,7 +27,15 @@ def inspect_config_usage(
             "actionable_hint": "Specify an environment variable name (e.g. 'DATABASE_URL' or 'PORT').",
         }
 
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
     var_clean = variable_name.strip()
     var_upper = var_clean.upper()
 
@@ -72,30 +80,34 @@ def inspect_config_usage(
                 if pattern.search(l_content) or var_clean in l_content:
                     # Filter out purely coincidental substring matches
                     if var_upper in l_content.upper():
+                        from ..security.sanitizer import redact_secrets
                         code_usages.append({
                             "file": rel_path,
                             "line": l_idx,
-                            "snippet": l_content.strip()[:80],
+                            "snippet": redact_secrets(l_content.strip()[:80]),
                         })
         except Exception:
             pass
 
-    # 3. Check current environment status (WITH REDACTION)
+    # 3. Check current environment status (WITH STRICT REDACTION - NEVER PRINT RAW VALUE)
     is_set = var_clean in os.environ or var_upper in os.environ
     is_secret = is_sensitive_key(var_clean)
 
     if is_set:
         raw_val = os.environ.get(var_clean) or os.environ.get(var_upper, "")
-        masked_val = "[REDACTED_SECRET]" if is_secret else (raw_val if len(raw_val) < 40 else raw_val[:37] + "...")
+        if raw_val and len(raw_val) >= 4:
+            for u in code_usages:
+                if raw_val in u["snippet"]:
+                    u["snippet"] = u["snippet"].replace(raw_val, "[REDACTED_SECRET]")
+        masked_val = "[REDACTED_SECRET]" if is_secret else "[SET]"
     else:
         masked_val = None
 
     # Construct markdown summary
     md_lines = [
         f"# ⚙️ Config & Environment Trace: `{var_clean}`",
-        f"- **Runtime Status:** {'✅ Set in Environment' if is_set else '❌ Unset in Environment'}",
-        f"- **Security Classification:** {'🔒 Sensitive Secret (Masked)' if is_secret else '📄 Standard Configuration'}",
-        f"- **Value Preview:** `{masked_val or 'None'}`",
+        f"- **Runtime Status:** `{'set' if is_set else 'unset'}`",
+        f"- **Security Classification:** {'🔒 Sensitive Secret' if is_secret else '📄 Standard Configuration'}",
         f"- **Definitions Found:** {len(defined_in)} config file(s)",
         f"- **Code Usages Found:** {len(code_usages)} call site(s)",
         "\n### 📝 Defined In Config Files",
@@ -116,6 +128,7 @@ def inspect_config_usage(
     return {
         "success": True,
         "variable_name": var_clean,
+        "status": "set" if is_set else "unset",
         "is_set": is_set,
         "is_secret": is_secret,
         "masked_value": masked_val,

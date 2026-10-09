@@ -1,4 +1,5 @@
 import re
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .reader import get_vault_path
@@ -15,14 +16,19 @@ def search_vault(
     Returns matched filenames, line numbers, and excerpt lines.
     """
     vault = get_vault_path()
-    search_root = vault / folder if folder else vault
-
-    if not search_root.exists():
-        return {
-            "success": False,
-            "error": f"Search folder '{folder}' does not exist in vault.",
-            "results": [],
-        }
+    if folder:
+        try:
+            from ..security.confine import confine
+            folder_target = folder if Path(folder).is_absolute() else (vault / folder)
+            search_root = confine(folder_target, kind="vault")
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Invalid or unconfined search folder '{folder}': {e}",
+                "results": [],
+            }
+    else:
+        search_root = vault
 
     flags = 0 if case_sensitive else re.IGNORECASE
     try:

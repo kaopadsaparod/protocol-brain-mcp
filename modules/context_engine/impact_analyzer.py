@@ -5,7 +5,6 @@ and line-level / commit co-change history (git_context).
 Zero-LLM deterministic analysis.
 """
 
-import subprocess
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -31,104 +30,112 @@ def find_impact(
             "actionable_hint": "Provide a symbol name (e.g. 'run_safe_command' or 'IndexStorage').",
         }
 
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
     storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
     indexer.index_workspace(max_depth=3)
 
-    conn = storage.get_connection()
-    cur = conn.cursor()
+    with storage.get_connection() as conn:
+        cur = conn.cursor()
 
-    # 1. Find direct symbol references across all files
-    cur.execute("""
-        SELECT f.path, sr.line
-        FROM symbol_references sr
-        JOIN files f ON sr.source_file_id = f.id
-        WHERE sr.target_symbol = ?
-        ORDER BY f.path, sr.line
-    """, (symbol_name,))
-    reference_rows = cur.fetchall()
-
-    callers_by_file: Dict[str, List[int]] = {}
-    for r_file, r_line in reference_rows:
-        callers_by_file.setdefault(r_file, []).append(r_line)
-
-    # 2. If file_path is given, also check imports of this module
-    dependent_modules: List[str] = []
-    if file_path:
-        norm_path = file_path.replace("\\", "/")
-        stem = Path(norm_path).stem
+        # 1. Find direct symbol references across all files
         cur.execute("""
-            SELECT DISTINCT f.path
-            FROM imports i
-            JOIN files f ON i.file_id = f.id
-            WHERE i.module = ? OR i.module LIKE ?
-        """, (stem, f"%.{stem}%"))
-        dependent_modules = [r[0] for r in cur.fetchall() if r[0] != norm_path]
+            SELECT f.path, sr.line
+            FROM symbol_references sr
+            JOIN files f ON sr.source_file_id = f.id
+            WHERE sr.target_symbol = ?
+            ORDER BY f.path, sr.line
+        """, (symbol_name,))
+        reference_rows = cur.fetchall()
 
-    # 3. Find affected tests
-    affected_tests: List[Dict[str, Any]] = []
-    for affected_file in list(callers_by_file.keys()) + dependent_modules:
-        if "test" in affected_file.lower():
+        callers_by_file: Dict[str, List[int]] = {}
+        for r_file, r_line in reference_rows:
+            callers_by_file.setdefault(r_file, []).append(r_line)
+
+        # 2. If file_path is given, also check imports of this module
+        dependent_modules: List[str] = []
+        if file_path:
+            norm_path = file_path.replace("\\", "/")
+            stem = Path(norm_path).stem
             cur.execute("""
-                SELECT t.test_name, t.line
-                FROM tests t
-                JOIN files f ON t.file_id = f.id
-                WHERE f.path = ?
-            """, (affected_file,))
-            for t_name, t_line in cur.fetchall():
+                SELECT DISTINCT f.path
+                FROM imports i
+                JOIN files f ON i.file_id = f.id
+                WHERE i.module = ? OR i.module LIKE ?
+            """, (stem, f"%.{stem}%"))
+            dependent_modules = [r[0] for r in cur.fetchall() if r[0] != norm_path]
+
+        # 3. Find affected tests
+        affected_tests: List[Dict[str, Any]] = []
+        for affected_file in list(callers_by_file.keys()) + dependent_modules:
+            if "test" in affected_file.lower():
+                cur.execute("""
+                    SELECT t.test_name, t.line
+                    FROM tests t
+                    JOIN files f ON t.file_id = f.id
+                    WHERE f.path = ?
+                """, (affected_file,))
+                for t_name, t_line in cur.fetchall():
+                    affected_tests.append({
+                        "test_file": affected_file,
+                        "test_name": t_name,
+                        "line": t_line,
+                    })
+
+        # Also search for tests named with symbol
+        cur.execute("""
+            SELECT f.path, t.test_name, t.line
+            FROM tests t
+            JOIN files f ON t.file_id = f.id
+            WHERE t.test_name LIKE ?
+        """, (f"%{symbol_name}%",))
+        for f_p, t_n, t_l in cur.fetchall():
+            if not any(at["test_file"] == f_p and at["test_name"] == t_n for at in affected_tests):
                 affected_tests.append({
-                    "test_file": affected_file,
-                    "test_name": t_name,
-                    "line": t_line,
+                    "test_file": f_p,
+                    "test_name": t_n,
+                    "line": t_l,
                 })
 
-    # Also search for tests named with symbol
-    cur.execute("""
-        SELECT f.path, t.test_name, t.line
-        FROM tests t
-        JOIN files f ON t.file_id = f.id
-        WHERE t.test_name LIKE ?
-    """, (f"%{symbol_name}%",))
-    for f_p, t_n, t_l in cur.fetchall():
-        if not any(at["test_file"] == f_p and at["test_name"] == t_n for at in affected_tests):
-            affected_tests.append({
-                "test_file": f_p,
-                "test_name": t_n,
-                "line": t_l,
-            })
+        total_affected_files = len(set(list(callers_by_file.keys()) + dependent_modules))
+        total_references = len(reference_rows)
 
-    total_affected_files = len(set(list(callers_by_file.keys()) + dependent_modules))
-    total_references = len(reference_rows)
+        # Determine risk level
+        if total_references == 0 and total_affected_files == 0:
+            risk_level = "LOW"
+            risk_reasons = ["Zero external references found in the indexed workspace."]
+        elif total_affected_files <= 2 and total_references <= 5:
+            risk_level = "MEDIUM"
+            risk_reasons = [f"Localized impact on {total_affected_files} files with {total_references} call sites."]
+        elif total_affected_files <= 5:
+            risk_level = "HIGH"
+            risk_reasons = [f"Moderate blast radius affecting {total_affected_files} files and {len(affected_tests)} tests."]
+        else:
+            risk_level = "CRITICAL"
+            risk_reasons = [f"High blast radius affecting {total_affected_files} files and {total_references} usages across codebase."]
 
-    # Determine risk level
-    if total_references == 0 and total_affected_files == 0:
-        risk_level = "LOW"
-        risk_reasons = ["Zero external references found in the indexed workspace."]
-    elif total_affected_files <= 2 and total_references <= 5:
-        risk_level = "MEDIUM"
-        risk_reasons = [f"Localized impact on {total_affected_files} files with {total_references} call sites."]
-    elif total_affected_files <= 5:
-        risk_level = "HIGH"
-        risk_reasons = [f"Moderate blast radius affecting {total_affected_files} files and {len(affected_tests)} tests."]
-    else:
-        risk_level = "CRITICAL"
-        risk_reasons = [f"High blast radius affecting {total_affected_files} files and {total_references} usages across codebase."]
+        if not affected_tests and total_references > 0:
+            risk_reasons.append("⚠️ Warning: No automated tests found directly covering this symbol.")
 
-    if not affected_tests and total_references > 0:
-        risk_reasons.append("⚠️ Warning: No automated tests found directly covering this symbol.")
-
-    return {
-        "success": True,
-        "symbol_name": symbol_name,
-        "risk_level": risk_level,
-        "risk_reasons": risk_reasons,
-        "total_references": total_references,
-        "total_affected_files": total_affected_files,
-        "callers_by_file": callers_by_file,
-        "dependent_modules": dependent_modules,
-        "affected_tests": affected_tests,
-    }
+        return {
+            "success": True,
+            "symbol_name": symbol_name,
+            "risk_level": risk_level,
+            "risk_reasons": risk_reasons,
+            "total_references": total_references,
+            "total_affected_files": total_affected_files,
+            "callers_by_file": callers_by_file,
+            "dependent_modules": dependent_modules,
+            "affected_tests": affected_tests,
+        }
 
 
 def find_relevant_tests(
@@ -145,91 +152,97 @@ def find_relevant_tests(
             "actionable_hint": "Specify a file path (e.g. 'modules/security/policy.py') or symbol (e.g. 'run_safe_command').",
         }
 
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
     storage = IndexStorage(root_dir=root)
     indexer = IncrementalIndexer(workspace_root=root, storage=storage)
     indexer.index_workspace(max_depth=3)
 
-    conn = storage.get_connection()
-    cur = conn.cursor()
+    with storage.get_connection() as conn:
+        cur = conn.cursor()
 
-    target_clean = target_file_or_symbol.replace("\\", "/").strip()
-    is_path = "/" in target_clean or target_clean.endswith(".py") or target_clean.endswith(".ts") or target_clean.endswith(".js")
+        target_clean = target_file_or_symbol.replace("\\", "/").strip()
+        is_path = "/" in target_clean or target_clean.endswith(".py") or target_clean.endswith(".ts") or target_clean.endswith(".js")
 
-    matching_tests: List[Dict[str, Any]] = []
+        matching_tests: List[Dict[str, Any]] = []
 
-    if is_path:
-        stem = Path(target_clean).stem
-        # Direct test file matching
-        cur.execute("""
-            SELECT f.path, t.test_name, t.line
-            FROM tests t
-            JOIN files f ON t.file_id = f.id
-            WHERE f.path LIKE ? OR f.path LIKE ?
-        """, (f"%test_{stem}.py", f"%{stem}.test.%"))
-        for f_path, t_name, l_start in cur.fetchall():
-            matching_tests.append({"file": f_path, "test": t_name, "line": l_start})
-
-        # Also search for tests importing or referencing symbols in this file
-        cur.execute("""
-            SELECT DISTINCT f.path, t.test_name, t.line
-            FROM tests t
-            JOIN files f ON t.file_id = f.id
-            JOIN symbol_references sr ON sr.source_file_id = f.id
-            JOIN symbols s ON sr.target_symbol = s.name
-            JOIN files target_f ON s.file_id = target_f.id
-            WHERE target_f.path = ?
-        """, (target_clean,))
-        for f_path, t_name, l_start in cur.fetchall():
-            if not any(m["file"] == f_path and m["test"] == t_name for m in matching_tests):
+        if is_path:
+            stem = Path(target_clean).stem
+            # Direct test file matching
+            cur.execute("""
+                SELECT f.path, t.test_name, t.line
+                FROM tests t
+                JOIN files f ON t.file_id = f.id
+                WHERE f.path LIKE ? OR f.path LIKE ?
+            """, (f"%test_{stem}.py", f"%{stem}.test.%"))
+            for f_path, t_name, l_start in cur.fetchall():
                 matching_tests.append({"file": f_path, "test": t_name, "line": l_start})
-    else:
-        # Symbol-based search
-        cur.execute("""
-            SELECT f.path, t.test_name, t.line
-            FROM tests t
-            JOIN files f ON t.file_id = f.id
-            WHERE t.test_name LIKE ?
-        """, (f"%{target_clean}%",))
-        for f_path, t_name, l_start in cur.fetchall():
-            matching_tests.append({"file": f_path, "test": t_name, "line": l_start})
 
-        # Check references in test files
-        cur.execute("""
-            SELECT DISTINCT f.path, t.test_name, t.line
-            FROM symbol_references sr
-            JOIN files f ON sr.source_file_id = f.id
-            LEFT JOIN tests t ON t.file_id = f.id AND t.line <= sr.line
-            WHERE sr.target_symbol = ? AND f.path LIKE '%test%'
-        """, (target_clean,))
-        for f_path, t_name, l_start in cur.fetchall():
-            t_name_resolved = t_name or "(entire test file)"
-            if not any(m["file"] == f_path and m["test"] == t_name_resolved for m in matching_tests):
-                matching_tests.append({"file": f_path, "test": t_name_resolved, "line": l_start or 1})
+            # Also search for tests importing or referencing symbols in this file
+            cur.execute("""
+                SELECT DISTINCT f.path, t.test_name, t.line
+                FROM tests t
+                JOIN files f ON t.file_id = f.id
+                JOIN symbol_references sr ON sr.source_file_id = f.id
+                JOIN symbols s ON sr.target_symbol = s.name
+                JOIN files target_f ON s.file_id = target_f.id
+                WHERE target_f.path = ?
+            """, (target_clean,))
+            for f_path, t_name, l_start in cur.fetchall():
+                if not any(m["file"] == f_path and m["test"] == t_name for m in matching_tests):
+                    matching_tests.append({"file": f_path, "test": t_name, "line": l_start})
+        else:
+            # Symbol-based search
+            cur.execute("""
+                SELECT f.path, t.test_name, t.line
+                FROM tests t
+                JOIN files f ON t.file_id = f.id
+                WHERE t.test_name LIKE ?
+            """, (f"%{target_clean}%",))
+            for f_path, t_name, l_start in cur.fetchall():
+                matching_tests.append({"file": f_path, "test": t_name, "line": l_start})
 
-    # Group by test file to construct minimal test commands
-    unique_files = list(dict.fromkeys(m["file"] for m in matching_tests))
-    recommended_commands: List[str] = []
+            # Check references in test files
+            cur.execute("""
+                SELECT DISTINCT f.path, t.test_name, t.line
+                FROM symbol_references sr
+                JOIN files f ON sr.source_file_id = f.id
+                LEFT JOIN tests t ON t.file_id = f.id AND t.line <= sr.line
+                WHERE sr.target_symbol = ? AND f.path LIKE '%test%'
+            """, (target_clean,))
+            for f_path, t_name, l_start in cur.fetchall():
+                t_name_resolved = t_name or "(entire test file)"
+                if not any(m["file"] == f_path and m["test"] == t_name_resolved for m in matching_tests):
+                    matching_tests.append({"file": f_path, "test": t_name_resolved, "line": l_start or 1})
 
-    for uf in unique_files:
-        if uf.endswith(".py"):
-            tests_in_file = [m["test"] for m in matching_tests if m["file"] == uf and m["test"] != "(entire test file)"]
-            if tests_in_file:
-                k_filter = " or ".join(tests_in_file[:3])
-                recommended_commands.append(f"pytest {uf} -k \"{k_filter}\"")
-            else:
-                recommended_commands.append(f"pytest {uf}")
-        elif uf.endswith(".ts") or uf.endswith(".js"):
-            recommended_commands.append(f"npm test -- {uf}")
+        # Group by test file to construct minimal test commands
+        unique_files = list(dict.fromkeys(m["file"] for m in matching_tests))
+        recommended_commands: List[str] = []
 
-    return {
-        "success": True,
-        "target": target_file_or_symbol,
-        "total_tests_found": len(matching_tests),
-        "matching_tests": matching_tests,
-        "affected_test_files": unique_files,
-        "recommended_commands": recommended_commands,
-    }
+        for uf in unique_files:
+            if uf.endswith(".py"):
+                tests_in_file = [m["test"] for m in matching_tests if m["file"] == uf and m["test"] != "(entire test file)"]
+                if tests_in_file:
+                    k_filter = " or ".join(tests_in_file[:3])
+                    recommended_commands.append(f"pytest {uf} -k \"{k_filter}\"")
+                else:
+                    recommended_commands.append(f"pytest {uf}")
+
+        return {
+            "success": True,
+            "target": target_file_or_symbol,
+            "total_tests_found": len(matching_tests),
+            "matching_tests": matching_tests,
+            "affected_test_files": unique_files,
+            "recommended_commands": recommended_commands,
+        }
 
 
 def git_context(
@@ -240,11 +253,21 @@ def git_context(
     """
     Retrieves compact commit history, line changes, and co-changed files for AI context.
     """
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
     commits_limit = max(1, min(commits, 20))
 
+    from ..system.git_tools import run_git
+
     cmd_log = [
-        "git", "log",
+        "log",
         f"-n{commits_limit}",
         "--pretty=format:%h|%an|%ar|%s",
     ]
@@ -252,13 +275,13 @@ def git_context(
         cmd_log.extend(["--", file_path])
 
     try:
-        log_out = subprocess.check_output(
+        log_res = run_git(
             cmd_log,
-            cwd=str(root),
-            stderr=subprocess.DEVNULL,
-            timeout=3,
-            text=True,
+            cwd=root,
+            timeout=3.0,
+            check=True,
         )
+        log_out = log_res.stdout
     except Exception as e:
         return {
             "success": False,
@@ -282,13 +305,13 @@ def git_context(
     if file_path:
         try:
             # Look at files changed in the commits modifying this file
-            co_out = subprocess.check_output(
-                ["git", "log", f"-n{max(5, commits_limit * 2)}", "--name-only", "--pretty=format:COMMIT", "--", file_path],
-                cwd=str(root),
-                stderr=subprocess.DEVNULL,
-                timeout=3,
-                text=True,
+            co_res = run_git(
+                ["log", f"-n{max(5, commits_limit * 2)}", "--name-only", "--pretty=format:COMMIT", "--", file_path],
+                cwd=root,
+                timeout=3.0,
+                check=True,
             )
+            co_out = co_res.stdout
             all_files: List[str] = []
             norm_target = file_path.replace("\\", "/").lower()
             for f in co_out.splitlines():

@@ -41,7 +41,8 @@ def filter_build_errors(raw_log: str, max_lines: int = 30) -> Dict[str, Any]:
             break
 
     has_errors = len(selected_lines) > 0
-    clean_text = "\n".join(selected_lines) if has_errors else raw_log[:1500]
+    from ..security.sanitizer import redact_secrets
+    clean_text = redact_secrets("\n".join(selected_lines) if has_errors else raw_log[:1500])
 
     return {
         "has_errors": has_errors,

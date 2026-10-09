@@ -166,7 +166,15 @@ def trace_error(
             "actionable_hint": "Pass the full traceback, stack trace, or error log string into trace_error.",
         }
 
-    root = Path(workspace_root).resolve() if workspace_root else Path.cwd().resolve()
+    try:
+        from ..security.confine import confine
+        root = confine(workspace_root or Path.cwd(), kind="workspace")
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Invalid workspace root: {e}",
+            "actionable_hint": "Specify a valid workspace path within trusted workspaces.",
+        }
     parsed = parse_stack_trace(error_log, root)
     frames: List[StackFrame] = parsed["frames"]
 
@@ -190,55 +198,55 @@ def trace_error(
             # Index file if not yet up to date
             indexer.index_single_file(crash_file)
 
-            conn = storage.get_connection()
-            cur = conn.cursor()
+            with storage.get_connection() as conn:
+                cur = conn.cursor()
 
-            # Find matching symbol in crash file containing the crash line
-            cur.execute("""
-                SELECT s.name, s.type, s.line_start, s.line_end, s.container
-                FROM symbols s
-                JOIN files f ON s.file_id = f.id
-                WHERE f.path = ? AND s.line_start <= ? AND s.line_end >= ?
-                ORDER BY (s.line_end - s.line_start) ASC
-                LIMIT 1
-            """, (crash_site.file_path, crash_site.line_number, crash_site.line_number))
-            row = cur.fetchone()
-
-            if row:
-                sym_name, sym_type, l_start, l_end, container = row
-                crash_symbol_info = {
-                    "name": sym_name,
-                    "type": sym_type,
-                    "container": container,
-                    "lines": f"{l_start}-{l_end}",
-                }
-                crash_code_slice, start_l, end_l = extract_slice_from_disk(
-                    crash_file, l_start, l_end, padding=2
-                )
-                # Find callers of this symbol
+                # Find matching symbol in crash file containing the crash line
                 cur.execute("""
-                    SELECT f.path, sr.line
-                    FROM symbol_references sr
-                    JOIN files f ON sr.source_file_id = f.id
-                    WHERE sr.target_symbol = ? AND f.path != ?
-                    LIMIT 5
-                """, (sym_name, crash_site.file_path))
-                callers = [f"{r[0]}:{r[1]}" for r in cur.fetchall()]
-            else:
-                # If no enclosing symbol, slice around the crash line
-                crash_code_slice, start_l, end_l = extract_slice_from_disk(
-                    crash_file, max(1, crash_site.line_number - 8), crash_site.line_number + 8, padding=0
-                )
+                    SELECT s.name, s.type, s.line_start, s.line_end, s.container
+                    FROM symbols s
+                    JOIN files f ON s.file_id = f.id
+                    WHERE f.path = ? AND s.line_start <= ? AND s.line_end >= ?
+                    ORDER BY (s.line_end - s.line_start) ASC
+                    LIMIT 1
+                """, (crash_site.file_path, crash_site.line_number, crash_site.line_number))
+                row = cur.fetchone()
 
-            # Look up tests referencing this file or symbol
-            cur.execute("""
-                SELECT f.path, t.test_name
-                FROM tests t
-                JOIN files f ON t.file_id = f.id
-                WHERE f.path LIKE '%test%' OR t.test_name LIKE ?
-                LIMIT 5
-            """, (f"%{crash_site.file_path.split('/')[-1].split('.')[0]}%",))
-            relevant_tests = [f"{r[0]} ({r[1]})" for r in cur.fetchall()]
+                if row:
+                    sym_name, sym_type, l_start, l_end, container = row
+                    crash_symbol_info = {
+                        "name": sym_name,
+                        "type": sym_type,
+                        "container": container,
+                        "lines": f"{l_start}-{l_end}",
+                    }
+                    crash_code_slice, start_l, end_l = extract_slice_from_disk(
+                        crash_file, l_start, l_end, padding=2
+                    )
+                    # Find callers of this symbol
+                    cur.execute("""
+                        SELECT f.path, sr.line
+                        FROM symbol_references sr
+                        JOIN files f ON sr.source_file_id = f.id
+                        WHERE sr.target_symbol = ? AND f.path != ?
+                        LIMIT 5
+                    """, (sym_name, crash_site.file_path))
+                    callers = [f"{r[0]}:{r[1]}" for r in cur.fetchall()]
+                else:
+                    # If no enclosing symbol, slice around the crash line
+                    crash_code_slice, start_l, end_l = extract_slice_from_disk(
+                        crash_file, max(1, crash_site.line_number - 8), crash_site.line_number + 8, padding=0
+                    )
+
+                # Look up tests referencing this file or symbol
+                cur.execute("""
+                    SELECT f.path, t.test_name
+                    FROM tests t
+                    JOIN files f ON t.file_id = f.id
+                    WHERE f.path LIKE '%test%' OR t.test_name LIKE ?
+                    LIMIT 5
+                """, (f"%{crash_site.file_path.split('/')[-1].split('.')[0]}%",))
+                relevant_tests = [f"{r[0]} ({r[1]})" for r in cur.fetchall()]
 
     # Construct synthesized markdown context under budget
     md_sections = [
@@ -279,14 +287,15 @@ def trace_error(
     else:
         md_sections.append(f"- Inspect input parameters passed into `{crash_symbol_info['name'] if crash_symbol_info else 'calling frame'}`.")
 
-    synthesized_md = "\n".join(md_sections)
+    from ..security.sanitizer import redact_secrets
+    synthesized_md = redact_secrets("\n".join(md_sections))
     estimated_tokens = estimate_tokens(synthesized_md)
 
     return {
         "success": True,
         "diagnostic_context": synthesized_md,
         "error_type": parsed["error_type"],
-        "error_message": parsed["error_message"],
+        "error_message": redact_secrets(parsed["error_message"]),
         "crash_site": crash_site.to_dict() if crash_site else None,
         "crash_symbol": crash_symbol_info,
         "callers": callers,

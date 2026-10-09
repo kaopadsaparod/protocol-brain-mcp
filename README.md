@@ -21,7 +21,7 @@ flowchart TD
         LOCAL["Local AI (Ollama / Open WebUI)"]
     end
 
-    subgraph MCP["Protocol Brain MCP Server (v0.4.0)"]
+    subgraph MCP["Protocol Brain MCP Server (v0.5.1)"]
         Router["MCPServer (Official MCP SDK v2.3.0)"]
         Log["Safe Logger -> stderr / protocol_brain.log"]
 
@@ -136,7 +136,7 @@ flowchart TD
 * `get_active_listening_ports()`: ดูรายการพอร์ต TCP ที่กำลังถูกใช้งาน
 * `check_git_status(repo_path)`: ตรวจสถานะ Git (Branch, Staged, Unstaged, Untracked) ในรูปแบบกระชับ ป้องกัน Git hooks injection
 * `get_git_diff(repo_path, staged_only)`: ดูสรุป Diff สถิติการแก้ไขไฟล์ พร้อมตัวอย่าง Diff แบบจำกัดบรรทัด และปิด external diff engine เพื่อความปลอดภัย
-* `run_windows_command(cmd, cwd)`: รันคำสั่งปลอดภัย (`shell=False`, Argument vector, ป้องกัน Shell Injection, ปรับ `npm.cmd` อัตโนมัติ, จำกัดใน `trusted_workspaces`)
+* `run_windows_command(cmd, cwd)`: รันคำสั่งปลอดภัย (`shell=False`, Argument vector, ป้องกัน Shell Injection, บล็อก batch scripts/npm/npx, จำกัดใน `trusted_workspaces`)
 * `check_system_and_gpu()`: เช็คโหลด CPU, RAM, เนื้อที่ดิสก์ และตรวจจับ VRAM ของการ์ดจอ NVIDIA อัตโนมัติ
 * `notify_user_windows(title, msg)`: ส่งการแจ้งเตือน Windows Toast Notification ปลอดภัยผ่าน Environment Variables ป้องกัน Command Escape 100%
 * `convert_to_thai_pdf(input_file)`: แปลง DOCX/MD เป็น PDF ภาษาไทยด้วย LibreOffice Headless
@@ -147,7 +147,7 @@ flowchart TD
 
 ---
 
-## 🔒 การรักษาความปลอดภัยเชิงลึก (Security & Hardening v0.5.0)
+## 🔒 การรักษาความปลอดภัยเชิงลึก (Security & Hardening v0.5.1)
 
 > [!IMPORTANT]
 > **คำแนะนำสำหรับ AI Client:** เพื่อความปลอดภัยสูงสุด แนะนำให้ตั้งค่า AI Client (เช่น `agy` หรือ Claude Code) ให้ **ถามยืนยันก่อนรันคำสั่ง (User Confirmation / Ask Permission)** สำหรับ 2 เครื่องมือนี้เสมอ:
@@ -158,16 +158,19 @@ flowchart TD
 1. **Capability-Based Policy Engine (`policy.py`):**
    - ควบคุมการทำงานของคำสั่งด้วยสิทธิ์แบบละเอียด (`git_read`, `git_write`, `run_tests`, `package_install`, `system_control`, `process_termination`)
    - สกัดกั้น Path Traversal ในการรันเทสต์ เช่น `python tests/../malicious.py` โดยบังคับตรวจ Resolve Path จริงให้อยู่ใต้โฟลเดอร์ `tests/`
+   - Target Path Confinement เข้มงวด: ตรวจสอบ flag `-C`, `--git-dir`, `--work-tree` ของ git, ไฟล์ target ของ pytest, รวมถึงเป้าหมายของ `ruff` และ `python -m ruff` ต้องอยู่ใน `trusted_workspaces` เท่านั้น
    - แบน Flag เขียนไฟล์ (`--output`, `-o`) และ Flag อ่านนอก Repo (`--no-index`) ในคำสั่ง `git_read`
    - คำสั่งที่แก้ไข Git (`branch -D`, `tag -d`, `remote add`), แก้ไขไฟล์ (`ruff --fix`, `ruff format`), หรือดาวน์โหลดแพ็กเกจ (`npx`) ถูกจัดเป็น Privileged Write ทั้งหมด
    - คำสั่ง `release_port` ควบคุมด้วยสิทธิ์ `process_termination` (ปิดเป็น Default)
 2. **Hardened Shell Runner (`shell_runner.py`):**
    - รันด้วย `shell=False` ส่งผ่านเป็น Argument Vector เสมอ ป้องกันการพ่วงคำสั่ง cmd.exe
-   - ปฏิเสธ Metacharacters: `&`, `|`, `<`, `>`, `^`, `\n`, `\r`, `;`, `` ` `` (ปลดแบน `%` เพื่อให้คำสั่ง format เช่น `git log --format="%h"` ทำงานได้ปกติโดยไม่มีผลกระทบต่อ `shell=False`)
+   - ปฏิเสธ Metacharacters: `&`, `|`, `<`, `>`, `^`, `$`, `(`, `)`, `\n`, `\r`, `;`, `` ` `` ป้องกัน Subshell และ Shell Variable Expansion (ปลดแบน `%` เพื่อให้คำสั่ง format เช่น `git log --format="%h"` ทำงานได้ปกติโดยไม่มีผลกระทบต่อ `shell=False`)
+   - บล็อก Windows Batch Scripts (`.bat`, `.cmd`) รวมถึง Wrapper Script (`npm`, `npx`) เพื่อกำจัดความเสี่ยงที่ Windows `CreateProcessW` จะส่งต่อไปยัง `cmd.exe /c` ซึ่งอาจเกิด Argument Injection
    - ตัด Literal Quotes ที่ค้างจาก token parser เพื่อป้องกัน path เพี้ยนบน Windows
    - แยกแยะ Flag Case-Sensitive (เช่น `git -C` ไม่ถูกบล็อกเป็น `git -c`)
    - ตรวจจับและรัน `pytest` ใน `.venv` ผ่าน `["-m", "pytest"]` อย่างถูกต้อง
    - ค้นหา Binary ตรงจาก System `PATH` เท่านั้น ไม่อนุญาตให้รัน binary ที่วางดักไว้ใน `cwd`
+   - Subprocess Output Flood Bounded Reader: ตรวจจับและยุติ Process ทันทีหากพ่น output เกินเพดานความปลอดภัย (64 KB) เพื่อป้องกัน DoS/RAM Exhaustion พร้อมจำกัดบัฟเฟอร์เก็บที่ 16 KB
    - เพดาน Timeout เข้มงวด หากเกินเวลาจะสั่งฆ่า Process Tree ลูกหลานทั้งหมดด้วย `psutil.children(recursive=True)`
    - ตัดความยาว Output ตาม `max_log_lines` และเพดานไบต์ พร้อม Sanitization ข้อมูลความลับอัตโนมัติ
 3. **PowerShell Toast Notification Immunity (`notification.py`):**
@@ -241,7 +244,7 @@ python server.py --transport sse --port 8000
 โปรเจกต์มาพร้อมชุดทดสอบ `pytest` ครอบคลุมทั้ง **Happy Path, Edge Cases, และ Security Failure Cases**:
 
 ```powershell
-# รันชุดทดสอบอัตโนมัติ 52 เคส (Unit, Security Regression, HTTP Auth, Metrics, and Real MCP Integration)
+# รันชุดทดสอบอัตโนมัติ 113+ เคส (Unit, Security Regression, Hardened Boundaries, HTTP Auth, Metrics, and MCP Integration)
 python -m pytest -v
 
 # ตรวจสอบ Code Quality และ Linting ด้วย ruff

@@ -1,7 +1,7 @@
 """
 System Operations, Windows Guard, and Hardware Sentinel Module.
 """
-from .git_tools import get_git_diff_summary, get_git_status
+from .git_tools import SAFE_GIT_FLAGS, get_git_diff_summary, get_git_status, run_git
 from .hardware import get_gpu_vram, get_system_health
 from .notification import send_windows_notification
 from .port_killer import free_port, list_listening_ports
@@ -17,4 +17,7 @@ __all__ = [
     "send_windows_notification",
     "get_git_status",
     "get_git_diff_summary",
+    "run_git",
+    "SAFE_GIT_FLAGS",
 ]
+
